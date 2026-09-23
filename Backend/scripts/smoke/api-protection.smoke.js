@@ -1,7 +1,7 @@
 const assert = require('node:assert');
 
 // Smoke for Backend/API_PROTECTION_README.md — verifies the four protection middlewares
-// boot under both NestJS (Backend/src/main.ts) and legacy Express (backend/server.js).
+// boot under both NestJS (Backend/src/main.ts) and legacy Express (Backend/server.js).
 
 async function main() {
   const ddos = require('../../middleware/ddosGuard');
@@ -44,9 +44,9 @@ async function main() {
   assert.ok(mainTs.includes('backwardCompatMiddleware'), 'main.ts must import backwardCompat');
 
   // Verify legacy Express entrypoint
-  const serverJs = fs.readFileSync(require('node:path').join(__dirname, '../../../backend/server.js'), 'utf8');
-  assert.ok(serverJs.includes('ddosGuard'), 'backend/server.js must import ddosGuard');
-  assert.ok(serverJs.includes('throttle'), 'backend/server.js must import throttle');
+  const serverJs = fs.readFileSync(require('node:path').join(__dirname, '../../../Backend/server.js'), 'utf8');
+  assert.ok(serverJs.includes('ddosGuard'), 'Backend/server.js must import ddosGuard');
+  assert.ok(serverJs.includes('throttle'), 'Backend/server.js must import throttle');
 
   console.log('API_PROTECTION_SMOKE_PASS');
 }

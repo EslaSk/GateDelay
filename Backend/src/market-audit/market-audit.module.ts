@@ -7,7 +7,7 @@ import {
 } from './market-audit.service';
 
 const nodeRequire = createRequire(__filename);
-const betaAccess = nodeRequire('../../../backend/services/betaAccess');
+const betaAccess = nodeRequire('../../../Backend/services/betaAccess');
 
 @Module({
   controllers: [MarketAuditController],

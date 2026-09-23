@@ -50,9 +50,9 @@ describe('API Protection (API_PROTECTION_README.md)', () => {
     expect(main).toMatch(/backwardCompatMiddleware/);
   });
 
-  it('backend/server.js wires all four middlewares (dual entrypoint)', () => {
+  it('Backend/server.js wires all four middlewares (dual entrypoint)', () => {
     const srv = fs.readFileSync(
-      path.join(__dirname, '../../../backend/server.js'),
+      path.join(__dirname, '../../../Backend/server.js'),
       'utf8',
     );
     expect(srv).toMatch(/ddosGuard/);

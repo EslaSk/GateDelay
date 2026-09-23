@@ -14,10 +14,10 @@
  *
  * ## Path Alias
  *
- * This file bridges the legacy Express server (`backend/server.js`) and the
+ * This file bridges the legacy Express server (`Backend/server.js`) and the
  * NestJS backend (`Backend/src/`).  The beta access service lives at
- * `backend/services/betaAccess.js`, reached via a relative cross-directory
- * require (`../../backend/services/betaAccess`).
+ * `Backend/services/betaAccess.js`, reached from this route with
+ * `../services/betaAccess`.
  *
  * ## Environment Variables
  *
@@ -33,8 +33,8 @@
  *
  * ## Related Files
  *
- *   - backend/services/betaAccess.js  — Service layer (beta user CRUD, invites)
- *   - backend/server.js               — Legacy Express server mounting this route
+ *   - Backend/services/betaAccess.js  — Service layer (beta user CRUD, invites)
+ *   - Backend/server.js               — Legacy Express server mounting this route
  */
 
 const MODULE_NAME = 'beta.js';
@@ -53,12 +53,12 @@ try {
 
 let betaAccess;
 try {
-  betaAccess = require('../../backend/services/betaAccess');
+  betaAccess = require('../services/betaAccess');
 } catch (err) {
   console.error(
     `[${MODULE_NAME}] FATAL: Failed to require betaAccess service. ` +
-    `Expected at ../../backend/services/betaAccess. ` +
-    `Check that backend/services/betaAccess.js exists.`
+    `Expected at ../services/betaAccess. ` +
+    `Check that Backend/services/betaAccess.js exists.`
   );
   throw err;
 }

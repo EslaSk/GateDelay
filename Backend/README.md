@@ -16,61 +16,18 @@ These values should always be reviewed before local development or deployment:
 
 Redis-backed workers also require either `REDIS_URL` or `REDIS_HOST`/`REDIS_PORT`.
 
-## Trade executor
-
-`Backend/jobs/tradeExecutor.js` starts the scheduled-trade worker. It loads the
-Agenda scheduler and logs the environment, scheduler name, and whether MongoDB
-configuration is present. The MongoDB URI itself is never written to logs.
-
-Environment variables:
-
-- `MONGODB_URI` - MongoDB connection used by Agenda and scheduled-trade models;
-  defaults to `mongodb://localhost:27017/gatedelay` when unset.
-- `NODE_ENV` - startup environment included in the executor log; defaults to
-  `development`.
-
-Run the module-load smoke check with:
-
-```bash
-npm run test:trade-executor
-```
-
 ## Setup
 
 ```bash
 npm install
 ```
 
-## Run the Nest API
+## Run
 
 ```bash
-npm run start:dev
+npm run dev
 ```
 
-Run the legacy Express API from the repository root with `npm --prefix backend run start`.
-
-## Market data and balances
-
-The Nest market-data module uses AviationStack for flight queries and caches responses for five minutes. Set `AVIATION_STACK_API_KEY` in `.env`; requests are exposed at `/api/market-data/flights` and `/api/market-data/airlines`.
-
-Balances are persisted by `models/Balance.js` and are shared by the Nest API and legacy Express routes:
-
-- Nest: `GET /api/balances/:userId` and `GET /api/balances/:userId/:asset`
-- Legacy: `GET /user/balance`, `/v1/users/balance`, and `/v2/users/balance` with the `userId` query parameter
-
-Run the dependency-free module wiring smoke check from this directory:
-
-```bash
-npm run test:balance
-```
-
-The Nest scripts are also run from `Backend`:
-
-```bash
-npm run start:dev
-npm run build
-npm test
-```
 Use `npm run start:dev` for the NestJS development API. The migration REST API is owned by the Express entrypoint:
 
 ```bash
@@ -187,7 +144,7 @@ The backend includes a beta access management route handler at `Backend/routes/b
 npm run test:beta
 ```
 
-See `Backend/routes/beta.js` and `backend/services/betaAccess.js` for full inline documentation.
+See `Backend/routes/beta.js` and `Backend/services/betaAccess.js` for full inline documentation.
 
 ## Blacklist Management
 
