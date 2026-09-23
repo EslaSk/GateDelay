@@ -7,9 +7,9 @@ Outcome is a decentralized flight prediction market built on the Stellar network
 - **Prediction Markets**: Participate in decentralized markets for flight arrival status.
 - **AI Risk Assessment**: Integrated Llama 3.1 analysis via **Groq** for real-time trading signals and flight risk reports.
 - **Real-time Aviation Data**: Automated flight tracking and market initialization powered by the **AviationStack API**.
-- **LMSR pricing**: Logarithmic Market Scoring Rule via `MarketMaker` / `Trading` / `LMSR` (`Contracts/src/`). A separate `OrderBook` CLOB also exists; [ADR 0001](docs/adr/0001-lmsr-vs-clob-ambiguity.md) is undecided and owned by [Phase 2](PHASE_2.md).
+- **LMSR pricing**: Logarithmic Market Scoring Rule via `MarketMaker` / `Trading` / `LMSR` (`Contracts/src/`). A separate `OrderBook` CLOB also exists; [ADR 0001](docs/adr/0001-lmsr-vs-clob-ambiguity.md) is undecided and owned by [Phase 2](docs/reports/PHASE_2.md).
 - **Hybrid AMM**: Sophisticated Logarithmic Market Scoring Rule (LMSR) for liquidity pricing, paired with a fair cost-based payout mechanism.
-- **Cross-Chain Relay**: Chainlink CCIP-powered relay for cross-chain market operations — see [Market Relay Delivery Summary](MARKET_RELAY_DELIVERY_SUMMARY.md).
+- **Cross-Chain Relay**: Chainlink CCIP-powered relay for cross-chain market operations — see [Market Relay Delivery Summary](docs/reports/MARKET_RELAY_DELIVERY_SUMMARY.md).
 - **Stellar Network**: High-performance, low-fee prediction market trading powered by the Stellar blockchain.
 - **Connect with Ease**: Seamless wallet integration via **Particle Network**, supporting both social and traditional EOA logins.
 
@@ -83,18 +83,21 @@ Keep this README short. Details live in:
 | Doc | What it covers | Owner |
 |-----|----------------|-------|
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Install, env templates, how to run each surface | Foundations |
-| [PHASES.md](PHASES.md) | Phase roadmap and issue index | Roadmap |
-| [PHASE_1.md](PHASE_1.md) | Stabilize foundations (`phase-1`) | Phase 1 |
-| [PHASE_2.md](PHASE_2.md) | Core market wiring (`phase-2`) | Phase 2 |
+| [STRUCTURE.md](docs/STRUCTURE.md) | Repository layout and package boundaries | Foundations |
+| [PHASES.md](docs/reports/PHASES.md) | Phase roadmap and issue index | Roadmap |
+| [PHASE_1.md](docs/reports/PHASE_1.md) | Stabilize foundations (`phase-1`) | Phase 1 |
+| [PHASE_2.md](docs/reports/PHASE_2.md) | Core market wiring (`phase-2`) | Phase 2 |
 | [ADR 0001](docs/adr/0001-lmsr-vs-clob-ambiguity.md) | LMSR vs CLOB — decision deferred to Phase 2 | Phase 2 |
 
-Do not copy the Phase 2 issue list here; start from [PHASE_2.md](PHASE_2.md).
+Do not copy the Phase 2 issue list here; start from [PHASE_2.md](docs/reports/PHASE_2.md).
 
 ## Project Structure
 
 - `Contracts/`: Solidity contracts, Foundry tests, and deployment scripts.
 - `Backend/`: NestJS API (and legacy Express `server.js`).
 - `Frontend/`: Next.js application, AI routes, and Web3 components.
+- `docs/reports/`: generated implementation reports, verification notes, and phase files.
+- `tools/`: repository maintenance scripts.
 
 ## License
 ## Further reading
@@ -102,10 +105,10 @@ Do not copy the Phase 2 issue list here; start from [PHASE_2.md](PHASE_2.md).
 | Document | Description |
 |----------|-------------|
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Full contributor setup guide |
-| [PHASES.md](PHASES.md) | Phase roadmap and issue index |
-| [CHECKLIST.md](CHECKLIST.md) | Local wallet + trade flow runbook |
-| [MARKET_RELAY_DELIVERY_SUMMARY.md](MARKET_RELAY_DELIVERY_SUMMARY.md) | Cross-chain relay system (Chainlink CCIP) |
-| [MINTING_PAUSABLE_IMPLEMENTATION.md](MINTING_PAUSABLE_IMPLEMENTATION.md) | Pausable minting token with role-based control |
+| [PHASES.md](docs/reports/PHASES.md) | Phase roadmap and issue index |
+| [CHECKLIST.md](docs/reports/CHECKLIST.md) | Local wallet + trade flow runbook |
+| [MARKET_RELAY_DELIVERY_SUMMARY.md](docs/reports/MARKET_RELAY_DELIVERY_SUMMARY.md) | Cross-chain relay system (Chainlink CCIP) |
+| [MINTING_PAUSABLE_IMPLEMENTATION.md](docs/reports/MINTING_PAUSABLE_IMPLEMENTATION.md) | Pausable minting token with role-based control |
 
 ## ðŸ“œ License
 

@@ -23,7 +23,7 @@ Documentation and UI elsewhere sometimes refer to “hybrid AMM” or order matc
 
 ## Decision
 
-**Defer the architecture choice to Phase 2** (core market wiring — see [PHASE_2.md](../../PHASE_2.md)).
+**Defer the architecture choice to Phase 2** (core market wiring — see [PHASE_2.md](../reports/PHASE_2.md)).
 
 Until Phase 2 closes that gate:
 
@@ -65,5 +65,5 @@ Until Phase 2 closes that gate:
 - `Contracts/src/MarketMaker.sol`
 - `Contracts/src/Trading.sol`
 - `Contracts/src/OrderBook.sol`
-- [PHASES.md](../../PHASES.md) — project phase index
-- [PHASE_2.md](../../PHASE_2.md) — Phase 2 owns the LMSR vs CLOB decision (`phase-2`)
+- [PHASES.md](../reports/PHASES.md) — project phase index
+- [PHASE_2.md](../reports/PHASE_2.md) — Phase 2 owns the LMSR vs CLOB decision (`phase-2`)

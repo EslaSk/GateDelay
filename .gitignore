@@ -110,6 +110,8 @@ artifacts/
 
 .agents/
 .claude/
+.kilo/
+.kiro/
 issue.md
 skills-lock.json
 branch_structure.json

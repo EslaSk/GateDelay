@@ -1,7 +1,7 @@
 # Blacklist.sol - Threat Assumptions & Security Documentation
 
 ## Scope & Objective
-`Contracts/contracts/Blacklist.sol` manages restricted addresses within the GateDelay protocol.
+`Contracts/src/Blacklist.sol` manages restricted addresses within the GateDelay protocol.
 
 ## Key Threat Assumptions
 1. **Admin Key Security:** Blacklist management relies on admin signature verification. Admin key compromise allows unauthorized access/blacklisting.

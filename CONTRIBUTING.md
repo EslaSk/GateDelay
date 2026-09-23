@@ -27,7 +27,7 @@ Optional but commonly needed for full backend features:
 |------|---------|
 | `Backend/` | NestJS API (`npm run start:dev`) and legacy Express `server.js` |
 | `Frontend/` | Next.js 16 app |
-| `Contracts/` | Foundry project (Solidity sources in `src/` and `contracts/`, tests in `test/`) |
+| `Contracts/` | Foundry project (Solidity sources in `src/`, tests in `test/`) |
 
 ---
 
@@ -131,7 +131,7 @@ Format check (matches CI in `Contracts/.github/workflows/test.yml`):
 forge fmt --check
 ```
 
-Sources live in `Contracts/src/` (e.g. `LMSR`, `MarketMaker`, `Trading`) and `Contracts/contracts/` (e.g. `OrderBook`). Tests live in `Contracts/test/`.
+Sources live in `Contracts/src/` (e.g. `LMSR`, `MarketMaker`, `Trading`, `OrderBook`). Tests live in `Contracts/test/`.
 
 > **Note:** There is a legacy `test/` directory at the repository root with older Foundry tests. Prefer `Contracts/test/` for the current contract tree.
 
@@ -158,4 +158,4 @@ Sources live in `Contracts/src/` (e.g. `LMSR`, `MarketMaker`, `Trading`) and `Co
 2. Keep changes focused; run the relevant checks above before opening a PR.
 3. Link the GitHub issue in the PR body (`Closes #NNN`).
 
-For phase planning and architecture notes see [`PHASES.md`](PHASES.md) when present on your branch.
+For phase planning and architecture notes see [`docs/reports/PHASES.md`](docs/reports/PHASES.md) when present on your branch.

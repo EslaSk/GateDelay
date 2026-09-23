@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import "../Contracts/contracts/BridgeConnector.sol";
+import "../Contracts/src/BridgeConnector.sol";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock LayerZero endpoint
