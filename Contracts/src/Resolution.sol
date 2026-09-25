@@ -22,6 +22,8 @@ contract Resolution {
     error NotAdmin();
     error MarketNotDisputed();
     error MarketNotResolved();
+    error ZeroAddress();
+    error InvalidDisputeWindow();
 
     // -------------------------------------------------------------------------
     // Types
@@ -71,6 +73,10 @@ contract Resolution {
         address _admin,
         address _positionToken
     ) {
+        if (_disputeWindowSeconds == 0) revert InvalidDisputeWindow();
+        if (_resolver == address(0) || _admin == address(0) || _positionToken == address(0)) {
+            revert ZeroAddress();
+        }
         disputeWindowSeconds = _disputeWindowSeconds;
         resolver = _resolver;
         admin = _admin;

@@ -15,6 +15,7 @@ contract LiquidityPool {
     // -------------------------------------------------------------------------
     // Custom errors
     // -------------------------------------------------------------------------
+    error ZeroAddress();
     error ZeroDepositAmount();
     error InsufficientLPBalance();
     error MarketFinalised();
@@ -65,6 +66,7 @@ contract LiquidityPool {
     // Constructor
     // -------------------------------------------------------------------------
     constructor(address _collateralToken, address _market) {
+        if (_collateralToken == address(0) || _market == address(0)) revert ZeroAddress();
         collateralToken = IERC20(_collateralToken);
         market = _market;
         marketStatus = MarketFactory.MarketStatus.OPEN;

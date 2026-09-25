@@ -57,10 +57,12 @@ contract Payout {
     error AlreadyClaimed();
     error NothingToClaim();
     error InvalidPrice();
+    error ZeroAddress();
 
     // ── Constructor ───────────────────────────────────────────────────────────
 
     constructor(address _collateral) {
+        if (_collateral == address(0)) revert ZeroAddress();
         collateral = ERC20Token(_collateral);
         owner = msg.sender;
     }

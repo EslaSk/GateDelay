@@ -45,9 +45,11 @@ contract MarketMaker {
     error InvalidOutcome();
     error InsufficientShares();
     error ZeroAmount();
+    error ZeroAddress();
 
     // ── Constructor ───────────────────────────────────────────────────────────
     constructor(address _collateral) {
+        if (_collateral == address(0)) revert ZeroAddress();
         collateral = ERC20Token(_collateral);
         owner = msg.sender;
     }

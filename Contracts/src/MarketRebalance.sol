@@ -62,6 +62,7 @@ contract MarketRebalance is Ownable, ReentrancyGuard {
     // ─── Custom errors ───────────────────────────────────────────────────────
 
     error ZeroAddress();
+    error InvalidBasisPoints(uint256 bps);
     error ZeroAmount();
     error InvalidWeights();          // weights don't sum to 10 000
     error TooManyAssets();
@@ -160,6 +161,9 @@ contract MarketRebalance is Ownable, ReentrancyGuard {
         uint256 _cooldownPeriod
     ) Ownable(initialOwner) {
         if (_router == address(0)) revert ZeroAddress();
+        if (_driftThresholdBps == 0 || _driftThresholdBps > BPS_DENOMINATOR) {
+            revert InvalidBasisPoints(_driftThresholdBps);
+        }
         router            = _router;
         driftThresholdBps = _driftThresholdBps;
         cooldownPeriod    = _cooldownPeriod;

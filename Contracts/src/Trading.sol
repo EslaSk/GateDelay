@@ -54,6 +54,7 @@ contract Trading {
     error InvalidFee();
     error InvalidReferrer();
     error InvalidRecipient();
+    error ZeroAddress();
 
     constructor(
         address _marketMaker,
@@ -61,12 +62,14 @@ contract Trading {
         uint256 _rebateBps,
         address _commissionRecipient
     ) {
+        if (_marketMaker == address(0)) revert ZeroAddress();
         require(_feeBps <= 1000, "Trading: fee > 10%");
         require(_rebateBps <= _feeBps, "Trading: rebate > fee");
         require(_commissionRecipient != address(0), "Trading: zero commissionRecipient");
 
         marketMaker = MarketMaker(_marketMaker);
-        collateral  = MarketMaker(_marketMaker).collateral();
+        collateral  = marketMaker.collateral();
+        if (address(collateral) == address(0)) revert ZeroAddress();
         owner       = msg.sender;
 
         feeBps = _feeBps;
