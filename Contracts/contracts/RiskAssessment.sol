@@ -59,6 +59,14 @@ contract RiskAssessment {
         uint256 maxConcentration,
         uint256 maxVolatility
     );
+    event RiskThresholdsUpdated(
+        uint256 oldMaxExposure,
+        uint256 newMaxExposure,
+        uint256 oldMaxConcentration,
+        uint256 newMaxConcentration,
+        uint256 oldMaxVolatility,
+        uint256 newMaxVolatility
+    );
 
     // -------------------------------------------------------------------------
     // Constants
@@ -177,6 +185,7 @@ contract RiskAssessment {
         uint256 maxConcentration,
         uint256 maxVolatility
     ) external {
+        RiskThreshold memory oldThreshold = riskThreshold;
         require(msg.sender == admin, "Not admin");
         
         riskThreshold = RiskThreshold({
@@ -186,6 +195,14 @@ contract RiskAssessment {
         });
 
         emit RiskThresholdUpdated(maxExposure, maxConcentration, maxVolatility);
+        emit RiskThresholdsUpdated(
+            oldThreshold.maxExposure,
+            maxExposure,
+            oldThreshold.maxConcentration,
+            maxConcentration,
+            oldThreshold.maxVolatility,
+            maxVolatility
+        );
     }
 
     /// @notice Check if position exceeds risk thresholds

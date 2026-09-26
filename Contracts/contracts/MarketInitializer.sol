@@ -64,6 +64,8 @@ contract MarketInitializer {
 
     event MarketActivated(address indexed market);
     event InitializationStatusChanged(address indexed market, MarketStatus newStatus);
+    event InitializationStatusUpdated(address indexed market, MarketStatus oldStatus, MarketStatus newStatus);
+    event MarketLiquidityUpdated(address indexed market, uint256 oldLiquidity, uint256 newLiquidity);
 
     // -------------------------------------------------------------------------
     // External functions
@@ -106,11 +108,14 @@ contract MarketInitializer {
     function activateMarket(address market) external {
         MarketState storage state = _marketState[market];
         if (!state.initialized) revert InitializationFailed();
+        MarketStatus oldStatus = state.status;
         if (state.status != MarketStatus.INITIALIZED) revert InvalidMarketParameters();
 
+        MarketStatus oldStatus = state.status;
         state.status = MarketStatus.ACTIVE;
         emit MarketActivated(market);
         emit InitializationStatusChanged(market, MarketStatus.ACTIVE);
+        emit InitializationStatusUpdated(market, oldStatus, MarketStatus.ACTIVE);
     }
 
     /// @notice Set market liquidity.
@@ -120,7 +125,9 @@ contract MarketInitializer {
         MarketState storage state = _marketState[market];
         if (!state.initialized) revert InitializationFailed();
 
+        uint256 oldLiquidity = state.totalLiquidity;
         state.totalLiquidity = liquidity;
+        emit MarketLiquidityUpdated(market, oldLiquidity, liquidity);
     }
 
     // -------------------------------------------------------------------------
