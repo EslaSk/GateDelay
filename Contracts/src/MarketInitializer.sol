@@ -108,7 +108,6 @@ contract MarketInitializer {
     function activateMarket(address market) external {
         MarketState storage state = _marketState[market];
         if (!state.initialized) revert InitializationFailed();
-        MarketStatus oldStatus = state.status;
         if (state.status != MarketStatus.INITIALIZED) revert InvalidMarketParameters();
 
         MarketStatus oldStatus = state.status;
