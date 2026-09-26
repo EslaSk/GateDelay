@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./MarketFactory.sol";
 import "./PositionToken.sol";
 import "./LiquidityPool.sol";
 
 /// @title Resolution
 /// @notice Manages the full lifecycle of market resolution, disputes, payouts, and refunds.
-contract Resolution {
+contract Resolution is ReentrancyGuard {
     // -------------------------------------------------------------------------
     // Custom errors
     // -------------------------------------------------------------------------
@@ -151,7 +152,7 @@ contract Resolution {
 
     /// @notice Claim payout for winning position tokens after the dispute window has elapsed.
     /// @param market  The market address.
-    function claimPayout(address market) external {
+    function claimPayout(address market) external nonReentrant {
         if (block.timestamp <= _disputeWindowEnd[market]) revert DisputeWindowActive();
         if (_marketStatus[market] != MarketFactory.MarketStatus.RESOLVED) revert MarketNotResolved();
 
@@ -180,7 +181,7 @@ contract Resolution {
 
     /// @notice Claim a refund for position tokens in a cancelled market.
     /// @param market  The market address.
-    function claimRefund(address market) external {
+    function claimRefund(address market) external nonReentrant {
         if (_marketStatus[market] != MarketFactory.MarketStatus.CANCELLED) revert MarketNotCancelled();
 
         uint256 yesId = positionToken.yesId(market);
