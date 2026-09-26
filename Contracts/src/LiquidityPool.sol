@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./MarketFactory.sol";
 
 /// @dev Minimal ERC20 interface for collateral token interactions.
@@ -11,10 +12,11 @@ interface IERC20 {
 
 /// @title LiquidityPool
 /// @notice Manages collateral deposits and LP token issuance for a single prediction market.
-contract LiquidityPool {
+contract LiquidityPool is ReentrancyGuard {
     // -------------------------------------------------------------------------
     // Custom errors
     // -------------------------------------------------------------------------
+    error ZeroAddress();
     error ZeroDepositAmount();
     error InsufficientLPBalance();
     error MarketFinalised();
@@ -65,6 +67,7 @@ contract LiquidityPool {
     // Constructor
     // -------------------------------------------------------------------------
     constructor(address _collateralToken, address _market) {
+        if (_collateralToken == address(0) || _market == address(0)) revert ZeroAddress();
         collateralToken = IERC20(_collateralToken);
         market = _market;
         marketStatus = MarketFactory.MarketStatus.OPEN;
@@ -76,7 +79,7 @@ contract LiquidityPool {
 
     /// @notice Deposit collateral into the pool and receive LP tokens.
     /// @param amount Amount of collateral to deposit (must be > 0).
-    function deposit(uint256 amount) external {
+    function deposit(uint256 amount) external nonReentrant {
         if (amount == 0) revert ZeroDepositAmount();
         if (
             marketStatus == MarketFactory.MarketStatus.RESOLVED ||
@@ -108,7 +111,7 @@ contract LiquidityPool {
 
     /// @notice Withdraw collateral by burning LP tokens.
     /// @param lpAmount Amount of LP tokens to burn.
-    function withdraw(uint256 lpAmount) external {
+    function withdraw(uint256 lpAmount) external nonReentrant {
         if (_lpBalances[msg.sender] < lpAmount) revert InsufficientLPBalance();
 
         // Calculate proportional collateral to return
@@ -158,7 +161,7 @@ contract LiquidityPool {
     }
 
     /// @notice Withdraw collateral to a recipient for payout/refund. Only callable by the Resolution contract.
-    function withdrawForResolution(address to, uint256 amount) external {
+    function withdrawForResolution(address to, uint256 amount) external nonReentrant {
         if (msg.sender != resolution) revert NotResolution();
         if (amount > totalLiquidity) revert InsufficientPoolBalance();
         totalLiquidity -= amount;

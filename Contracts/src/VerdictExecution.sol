@@ -37,6 +37,8 @@ contract VerdictExecution {
     event ExecutionSucceeded(bytes32 indexed verdictId);
     event ExecutionFailed(bytes32 indexed verdictId, string reason);
 
+    error ZeroAddress();
+
     modifier onlyArbitrator() {
         if (msg.sender != arbitrator) revert("Unauthorized");
         _;
@@ -48,6 +50,7 @@ contract VerdictExecution {
     }
 
     constructor(address _arbitrator) {
+        if (_arbitrator == address(0)) revert ZeroAddress();
         arbitrator = _arbitrator;
         owner = msg.sender;
     }

@@ -19,7 +19,7 @@ contract VerdictExecutionTest is Test {
         verdictExec = new VerdictExecution(arbitrator);
 
         // Deploy a minimal PositionToken (factory set to zero for tests)
-        pt = new PositionToken(address(0));
+        pt = new PositionToken(address(this));
 
         // Deploy Resolution with `verdictExec` as admin so it can call settleDispute
         resolution = new Resolution(

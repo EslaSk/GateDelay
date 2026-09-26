@@ -30,6 +30,7 @@ contract PositionToken {
     // -------------------------------------------------------------------------
     // Custom errors
     // -------------------------------------------------------------------------
+    error ZeroAddress();
     error UnauthorisedMinter();
     error ArrayLengthMismatch();
     error InsufficientBalance();
@@ -76,6 +77,7 @@ contract PositionToken {
     // Constructor
     // -------------------------------------------------------------------------
     constructor(address _factory) {
+        if (_factory == address(0)) revert ZeroAddress();
         factory = _factory;
     }
 

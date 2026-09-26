@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @dev Minimal reproduction of Chainlink CCIP's public message types, matching the
 /// real `Client` library shape so this contract's `ccipSend` calls are wire-compatible
@@ -52,7 +53,7 @@ interface IRouterClient {
 /// addresses that don't exist in this scaffold. Swap `_confirmIncoming` for a genuine
 /// `CCIPReceiver` override (or LayerZero `lzReceive`) once those addresses are known,
 /// and have the real bridge logic audited before moving real funds.
-contract MarketBridge is Ownable {
+contract MarketBridge is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     enum BridgeStatus {
@@ -222,6 +223,7 @@ contract MarketBridge is Ownable {
     function bridgeOut(uint64 destChainSelector, address recipient, uint256 amount)
         external
         payable
+        nonReentrant
         returns (uint256 transferId)
     {
         if (!_chains[destChainSelector].supported) revert MarketBridge__ChainNotSupported(destChainSelector);
@@ -231,10 +233,28 @@ contract MarketBridge is Ownable {
         uint256 fee = calculateFee(destChainSelector, amount);
         uint256 netAmount = amount - fee;
 
+        // Record the transfer before any external call so a token or router
+        // callback cannot observe an untracked in-flight bridge.
+        transferId = _nextTransferId++;
+        _transfers[transferId] = BridgeTransfer({
+            transferId: transferId,
+            sender: msg.sender,
+            recipient: recipient,
+            destChainSelector: destChainSelector,
+            amount: netAmount,
+            feeCharged: fee,
+            status: BridgeStatus.Pending,
+            createdAt: block.timestamp,
+            completedAt: 0,
+            ccipMessageId: bytes32(0)
+        });
+        _transfersBySender[msg.sender].push(transferId);
+        totalBridgedOut += netAmount;
+        if (fee > 0) totalFeesCollected += fee;
+
         bridgeToken.safeTransferFrom(msg.sender, address(this), amount);
         if (fee > 0) {
             bridgeToken.safeTransfer(feeRecipient, fee);
-            totalFeesCollected += fee;
         }
 
         Client.EVMTokenAmount[] memory tokenAmounts = new Client.EVMTokenAmount[](1);
@@ -250,23 +270,7 @@ contract MarketBridge is Ownable {
 
         bridgeToken.forceApprove(address(ccipRouter), netAmount);
         bytes32 messageId = ccipRouter.ccipSend{value: msg.value}(destChainSelector, message);
-
-        transferId = _nextTransferId++;
-        _transfers[transferId] = BridgeTransfer({
-            transferId: transferId,
-            sender: msg.sender,
-            recipient: recipient,
-            destChainSelector: destChainSelector,
-            amount: netAmount,
-            feeCharged: fee,
-            status: BridgeStatus.Pending,
-            createdAt: block.timestamp,
-            completedAt: 0,
-            ccipMessageId: messageId
-        });
-        _transfersBySender[msg.sender].push(transferId);
-
-        totalBridgedOut += netAmount;
+        _transfers[transferId].ccipMessageId = messageId;
 
         emit BridgeInitiated(transferId, msg.sender, recipient, destChainSelector, netAmount, fee, messageId);
     }
@@ -304,7 +308,7 @@ contract MarketBridge is Ownable {
     /// @notice Refund a failed transfer's net amount back to the original sender.
     /// @dev Requires the contract to hold sufficient bridge-token balance, e.g. funds that
     /// were never actually consumed by the router on a failed send.
-    function refundFailedTransfer(uint256 transferId) external onlyRelayer {
+    function refundFailedTransfer(uint256 transferId) external onlyRelayer nonReentrant {
         BridgeTransfer storage t = _transfers[transferId];
         if (t.transferId == 0) revert MarketBridge__TransferNotFound(transferId);
         if (t.status != BridgeStatus.Failed) revert MarketBridge__TransferNotPending(transferId, t.status);
@@ -318,7 +322,7 @@ contract MarketBridge is Ownable {
         emit BridgeRefunded(transferId, t.sender, t.amount);
     }
 
-    function withdrawFees(address to, uint256 amount) external onlyOwner {
+    function withdrawFees(address to, uint256 amount) external onlyOwner nonReentrant {
         if (to == address(0)) revert MarketBridge__ZeroAddress();
         bridgeToken.safeTransfer(to, amount);
         emit FeesWithdrawn(to, amount);

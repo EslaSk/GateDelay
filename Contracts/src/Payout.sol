@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import { UD60x18, ud, unwrap } from "@prb/math/src/UD60x18.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./ERC20Token.sol";
 
 /// @title Payout – market payout calculation and claim processing
@@ -9,7 +10,7 @@ import "./ERC20Token.sol";
 ///         WINNER_TAKE_ALL  – each winning share redeems 1 collateral token (standard binary market)
 ///         PROPORTIONAL     – winning-side pool is distributed pro-rata to share holders
 ///         SCALAR           – payout per share scales linearly between a floor and ceiling price
-contract Payout {
+contract Payout is ReentrancyGuard {
     // ── Types ─────────────────────────────────────────────────────────────────
 
     enum PayoutModel { WINNER_TAKE_ALL, PROPORTIONAL, SCALAR }
@@ -57,10 +58,12 @@ contract Payout {
     error AlreadyClaimed();
     error NothingToClaim();
     error InvalidPrice();
+    error ZeroAddress();
 
     // ── Constructor ───────────────────────────────────────────────────────────
 
     constructor(address _collateral) {
+        if (_collateral == address(0)) revert ZeroAddress();
         collateral = ERC20Token(_collateral);
         owner = msg.sender;
     }
@@ -163,7 +166,7 @@ contract Payout {
     // ── Claim processing ──────────────────────────────────────────────────────
 
     /// @notice Claim payout for the caller.
-    function claim(uint256 marketId) external {
+    function claim(uint256 marketId) external nonReentrant {
         if (claimStatus[marketId][msg.sender] == ClaimStatus.CLAIMED) revert AlreadyClaimed();
 
         uint256 amount = calculatePayout(marketId, msg.sender);

@@ -99,6 +99,8 @@ contract MarketVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     // Errors
     // ─────────────────────────────────────────────────────────────────────────
 
+    error ZeroAddress();
+    error EmptyShareMetadata();
     error ZeroAssets();
     error ZeroShares();
     error InsufficientShares();
@@ -124,6 +126,8 @@ contract MarketVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         ERC20(_name, _symbol)
         Ownable(msg.sender)
     {
+        if (_asset == address(0)) revert ZeroAddress();
+        if (bytes(_name).length == 0 || bytes(_symbol).length == 0) revert EmptyShareMetadata();
         asset            = IERC20(_asset);
         withdrawalDelay  = _withdrawalDelay;
         vaultCreatedAt   = block.timestamp;

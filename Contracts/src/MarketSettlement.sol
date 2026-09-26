@@ -16,6 +16,7 @@ contract MarketSettlement {
     error AlreadySettled();
     error InvalidSettlementAmount();
     error SettlementNotComplete();
+    error ZeroAddress();
 
     // -------------------------------------------------------------------------
     // Types
@@ -86,6 +87,9 @@ contract MarketSettlement {
         address _marketFactory,
         address _resolution
     ) {
+        if (_positionToken == address(0) || _marketFactory == address(0) || _resolution == address(0)) {
+            revert ZeroAddress();
+        }
         positionToken = PositionToken(_positionToken);
         marketFactory = MarketFactory(_marketFactory);
         resolution = Resolution(_resolution);
