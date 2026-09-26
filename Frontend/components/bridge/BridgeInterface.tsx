@@ -808,6 +808,7 @@ export default function BridgeInterface() {
             type="button"
             onClick={handleSwapChains}
             aria-label="Swap source and destination chains"
+            title="Swap source and destination chains"
             className="mb-0.5 flex h-9 w-9 items-center justify-center rounded-full transition-all hover:scale-110 hover:opacity-80"
             style={{ background: "var(--background)", border: "1px solid var(--border)", color: "var(--foreground)" }}
           >
@@ -853,6 +854,7 @@ export default function BridgeInterface() {
                 color: "var(--foreground)",
               }}
               aria-label="Select token"
+              title="Select token"
             >
               {SUPPORTED_TOKENS.map((t) => (
                 <option key={t.symbol} value={t.symbol}>
@@ -1028,6 +1030,7 @@ export default function BridgeInterface() {
                 <button
                   onClick={() => setShowConfirmModal(false)}
                   aria-label="Close confirmation"
+                  title="Close confirmation"
                   className="rounded-full p-2 transition-opacity hover:opacity-80"
                   style={{ color: "var(--muted)" }}
                 >

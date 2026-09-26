@@ -137,6 +137,7 @@ export default function BackupReminder() {
             <button
               onClick={dismiss}
               aria-label="Dismiss backup reminder"
+              title="Dismiss backup reminder"
               className="rounded-lg p-1.5 transition-colors hover:opacity-70"
               style={{ color: "var(--muted)" }}
             >

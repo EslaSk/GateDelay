@@ -21,8 +21,10 @@ export default function OrderBookCompact({ marketId, userAddress }: OrderBookCom
     const [bids, setBids] = useState<Order[]>([]);
     const [asks, setAsks] = useState<Order[]>([]);
     const [view, setView] = useState<"all" | "bids" | "asks">("all");
+    const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
+        setIsLoading(true);
         // Mock data - in production, fetch from WebSocket
         const mockBids: Order[] = [
             { price: 0.9950, quantity: 1250, total: 1243.75 },
@@ -40,8 +42,12 @@ export default function OrderBookCompact({ marketId, userAddress }: OrderBookCom
             { price: 1.0070, quantity: 600, total: 604.20 },
         ];
 
-        setBids(mockBids);
-        setAsks(mockAsks);
+        const id = window.setTimeout(() => {
+            setBids(mockBids);
+            setAsks(mockAsks);
+            setIsLoading(false);
+        }, 350);
+        return () => window.clearTimeout(id);
     }, [marketId]);
 
     const maxQuantity = Math.max(
@@ -74,6 +80,30 @@ export default function OrderBookCompact({ marketId, userAddress }: OrderBookCom
             </div>
         </div>
     );
+
+    if (isLoading) {
+        return (
+            <div className="bg-white rounded-lg shadow-lg" role="status" aria-busy="true" aria-label="Loading order book">
+                <div className="flex items-center justify-between p-4 border-b border-gray-200">
+                    <div className="h-6 w-28 rounded bg-gray-200 animate-pulse" />
+                    <div className="h-8 w-32 rounded bg-gray-200 animate-pulse" />
+                </div>
+                <div className="px-2 py-2 bg-gray-50">
+                    <div className="h-4 w-full rounded bg-gray-200 animate-pulse" />
+                </div>
+                <div className="h-96 space-y-2 overflow-hidden p-2">
+                    {Array.from({ length: 12 }).map((_, index) => (
+                        <div key={index} className="flex items-center justify-between gap-3">
+                            <div className="h-5 w-20 rounded bg-gray-200 animate-pulse" />
+                            <div className="h-5 w-16 rounded bg-gray-200 animate-pulse" />
+                            <div className="h-5 w-20 rounded bg-gray-200 animate-pulse" />
+                        </div>
+                    ))}
+                </div>
+                <span className="sr-only">Loading order book</span>
+            </div>
+        );
+    }
 
     return (
         <div className="bg-white rounded-lg shadow-lg">

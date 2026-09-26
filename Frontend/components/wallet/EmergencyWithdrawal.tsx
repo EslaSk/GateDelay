@@ -326,6 +326,7 @@ export default function EmergencyWithdrawal({
                     <button
                       onClick={handleClose}
                       aria-label="Close"
+                      title="Close emergency withdrawal panel"
                       className="rounded-full p-1.5 text-red-300 transition-opacity hover:opacity-70"
                     >
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5" aria-hidden="true">
