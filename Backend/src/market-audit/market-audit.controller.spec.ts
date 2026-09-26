@@ -9,6 +9,7 @@ describe('MarketAuditController security boundary', () => {
   const service = {
     createLog: jest.fn(),
     queryLogs: jest.fn(),
+    queryLogsPage: jest.fn(),
     setRetentionPolicy: jest.fn(),
     enforceRetention: jest.fn(),
     generateReport: jest.fn(),
@@ -50,5 +51,38 @@ describe('MarketAuditController security boundary', () => {
 
     expect(service.setRetentionPolicy).not.toHaveBeenCalled();
     expect(service.enforceRetention).toHaveBeenCalledTimes(1);
+  });
+
+  describe('paged log reads (#916)', () => {
+    it('keeps paging arguments out of the filter object', () => {
+      (service.queryLogsPage as jest.Mock).mockReturnValue({
+        logs: [],
+        meta: { page: 3, limit: 25, total: 90, totalPages: 4 },
+      });
+
+      controller.getLogs({ marketId: 'mkt-1', page: 3, limit: 25 });
+
+      expect(service.queryLogsPage).toHaveBeenCalledWith(
+        { marketId: 'mkt-1' },
+        3,
+        25,
+      );
+    });
+
+    it('returns the data plus meta envelope the frontend unpacks', () => {
+      const meta = { page: 1, limit: 100, total: 1, totalPages: 1 };
+      (service.queryLogsPage as jest.Mock).mockReturnValue({
+        logs: [{ id: 'log-1' }],
+        meta,
+      });
+
+      const result = controller.getLogs({});
+
+      expect(result).toEqual({
+        success: true,
+        data: [{ id: 'log-1' }],
+        meta,
+      });
+    });
   });
 });

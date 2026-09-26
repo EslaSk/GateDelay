@@ -236,17 +236,25 @@ export default function AuditLogViewer() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
 
-  // Fetch real backend data
+  // Fetch real backend data.
+  //
+  // The endpoint returns `{ success, data, meta }` so it can be paged alongside
+  // the other list endpoints (#916), but a bare array is still accepted so this
+  // viewer keeps working against an older backend. `limit` is capped at 1000 by
+  // the backend DTO — requesting more is a 400, not a silent truncation.
   const { data: backendLogs = [], isLoading, isError, refetch } = useQuery<AuditLog[], Error>({
     queryKey: ["market-audit-logs"],
     queryFn: async () => {
-      const res = await fetch("/api/market-audit?limit=2000", {
+      const res = await fetch("/api/market-audit?limit=1000", {
         method: "GET",
       });
       if (!res.ok) {
         throw new Error(`API failed: ${res.statusText}`);
       }
-      return (await res.json()) as AuditLog[];
+      const payload = await res.json();
+      if (Array.isArray(payload)) return payload as AuditLog[];
+      if (payload && Array.isArray(payload.data)) return payload.data as AuditLog[];
+      throw new Error("Unexpected audit-log payload shape");
     },
     retry: 1,
   });

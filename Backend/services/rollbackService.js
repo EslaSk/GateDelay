@@ -1,5 +1,7 @@
 const mongoose = require('mongoose');
 const { Web3 } = require('web3');
+const { buildPaginationMeta, normalizePagination } = require('../utils/pagination');
+const auditTrail = require('./auditTrail');
 
 const rollbackHistorySchema = new mongoose.Schema(
   {
@@ -86,6 +88,15 @@ class RollbackService {
         initiatedBy,
         conditions: validation,
       });
+      // A refused rollback is exactly the attempt an incident review needs to
+      // see, and it leaves no other trace beyond the rejected history row.
+      await auditTrail.logMarketRollbackRejected({
+        marketId,
+        rollbackId: entry.rollbackId,
+        operationType,
+        actor: initiatedBy,
+        reason: validation.reason,
+      });
       return { rejected: true, rollback: entry };
     }
 
@@ -114,6 +125,15 @@ class RollbackService {
       conditions: validation,
     });
 
+    await auditTrail.logMarketRollbackRequested({
+      marketId,
+      rollbackId,
+      operationType,
+      actor: initiatedBy,
+      reason,
+      snapshotBlock,
+    });
+
     return { rollbackId, history: historyEntry };
   }
 
@@ -129,6 +149,8 @@ class RollbackService {
     await this.connect();
     rollback.status = 'executing';
     await RollbackHistory.updateOne({ rollbackId }, { status: 'executing' });
+
+    const startedAt = Date.now();
 
     try {
       for (let i = 0; i < rollback.steps.length; i++) {
@@ -158,11 +180,28 @@ class RollbackService {
         },
       );
 
+      await auditTrail.logMarketRollbackCompleted({
+        marketId: rollback.marketId,
+        rollbackId,
+        operationType: rollback.operationType,
+        actor: rollback.initiatedBy,
+        transactionHash: rollback.transactionHash,
+        blockNumber: rollback.blockNumber,
+        durationMs: Date.now() - startedAt,
+      });
+
       return rollback;
     } catch (err) {
       rollback.status = 'failed';
       rollback.error = err.message;
       await RollbackHistory.updateOne({ rollbackId }, { status: 'failed', error: err.message });
+      await auditTrail.logMarketRollbackFailed({
+        marketId: rollback.marketId,
+        rollbackId,
+        operationType: rollback.operationType,
+        actor: rollback.initiatedBy,
+        error: err.message,
+      });
       throw err;
     }
   }
@@ -226,10 +265,37 @@ class RollbackService {
     return RollbackHistory.findOne({ rollbackId });
   }
 
-  async getHistory({ marketId, limit = 50 } = {}) {
+  /**
+   * List rollback history, newest first, with pagination metadata (#916).
+   *
+   * The `status` filter and `page`/`limit` bounds come from the request DTO
+   * (dto/rollback.dto.js); the clamping itself is centralised in
+   * utils/pagination.js so this and the Mongo-backed lists agree.
+   *
+   * @param {object} [options]
+   * @param {string} [options.marketId]
+   * @param {string} [options.status]
+   * @param {number} [options.page=1]
+   * @param {number} [options.limit=50]
+   * @returns {Promise<{ history: object[], meta: object }>}
+   */
+  async getHistory({ marketId, status, page, limit } = {}) {
     await this.connect();
-    const query = marketId ? { marketId } : {};
-    return RollbackHistory.find(query).sort({ createdAt: -1 }).limit(limit);
+    const { page: safePage, limit: safeLimit, skip } = normalizePagination({ page, limit, defaultLimit: 50 });
+
+    const query = {};
+    if (marketId) query.marketId = marketId;
+    if (status) query.status = status;
+
+    const [history, total] = await Promise.all([
+      RollbackHistory.find(query).sort({ createdAt: -1 }).skip(skip).limit(safeLimit).lean(),
+      RollbackHistory.countDocuments(query),
+    ]);
+
+    return {
+      history,
+      meta: buildPaginationMeta({ total, count: history.length, page: safePage, limit: safeLimit }),
+    };
   }
 }
 

@@ -7,6 +7,9 @@
  */
 
 const mongoose = require('mongoose');
+const { buildPaginationMeta, normalizePagination } = require('../utils/pagination');
+const auditTrail = require('./auditTrail');
+const { MARKET_AUDIT_ACTIONS } = auditTrail;
 
 // ─────────────────────────────────────────────────────────────── Schemas
 
@@ -81,6 +84,31 @@ const MarketStatusHistorySchema = new mongoose.Schema(
     },
   }
 );
+
+// ─────────────────────────────────────────────────────────────── Indexes
+
+// Declared before `mongoose.model()` below, deliberately. Mongoose only builds
+// a model's indexes when it initialises that model, so a `schema.index()` call
+// made after compilation is picked up only if nothing has touched the model
+// first — which depends on module require order. Declaring them here makes the
+// indexes exist regardless of who loads this file and in what order.
+
+/**
+ * Every operator query filters on the current state and orders by how recently
+ * it changed, so `status` leads and `lastStatusChange` supplies the sort —
+ * otherwise each call is a collection scan followed by an in-memory sort.
+ */
+MarketStatusSchema.index({ status: 1, lastStatusChange: -1 });
+
+/**
+ * getStatusHistory() paginates `{ marketId, changedAt: -1 }`; without this the
+ * skip/limit pair degrades to a full scan of the history collection.
+ *
+ * The second index backs the `toStatus` transition filter, which the
+ * `fromStatus` / `toStatus` query parameters added to that endpoint rely on.
+ */
+MarketStatusHistorySchema.index({ marketId: 1, changedAt: -1 });
+MarketStatusHistorySchema.index({ toStatus: 1, changedAt: -1 });
 
 const MarketStatus =
   mongoose.models.MarketStatus ||
@@ -270,6 +298,22 @@ async function updateMarketStatus({ marketId, status, operatorId, notes = '' }) 
 
   console.log(`[STATUS SERVICE] Market ${marketId} status changed from ${oldStatus} to ${status} by ${operatorId}`);
 
+  // Durable audit entry (#914). `MarketStatusHistory` is the operational record,
+  // but it is a separate collection with no actor context beyond `changedBy` and
+  // is not exported anywhere, so "who took this market offline" is not otherwise
+  // answerable outside this process's logs.
+  await auditTrail.logMarketAction({
+    action: status === 'ACTIVE' ? MARKET_AUDIT_ACTIONS.MARKET_UNPAUSED : MARKET_AUDIT_ACTIONS.MARKET_PAUSED,
+    marketId,
+    description: `Market status changed from ${oldStatus} to ${status} by ${operatorId}`,
+    actor: operatorId,
+    metadata: { fromStatus: oldStatus, toStatus: status, durationSeconds },
+    changes: {
+      before: { status: oldStatus },
+      after: { status },
+    },
+  });
+
   return {
     success: true,
     message: `Market ${marketId} status updated to ${status}`,
@@ -280,24 +324,38 @@ async function updateMarketStatus({ marketId, status, operatorId, notes = '' }) 
 /**
  * Retrieves the status transition history for a market.
  *
+ * `fromStatus` / `toStatus` are optional transition filters and are backed by the
+ * `{ toStatus, changedAt }` index added alongside this change.
+ *
  * @param {object} params
  * @param {string} params.marketId
  * @param {number} [params.limit]
  * @param {number} [params.page]
+ * @param {string} [params.fromStatus]
+ * @param {string} [params.toStatus]
  * @returns {Promise<object>} Paginated status history records
  */
-async function getStatusHistory({ marketId, limit = 50, page = 1 }) {
+async function getStatusHistory({ marketId, limit, page, fromStatus, toStatus }) {
   if (!marketId) throw new Error('marketId is required');
 
-  const skip = (page - 1) * limit;
+  const { page: safePage, limit: safeLimit, skip } = normalizePagination({
+    page,
+    limit,
+    defaultLimit: 50,
+    maxLimit: 100,
+  });
+
+  const query = { marketId };
+  if (fromStatus) query.fromStatus = fromStatus;
+  if (toStatus) query.toStatus = toStatus;
 
   const [history, total] = await Promise.all([
-    MarketStatusHistory.find({ marketId })
+    MarketStatusHistory.find(query)
       .sort({ changedAt: -1 })
       .skip(skip)
-      .limit(limit)
+      .limit(safeLimit)
       .lean(),
-    MarketStatusHistory.countDocuments({ marketId }),
+    MarketStatusHistory.countDocuments(query),
   ]);
 
   return {
@@ -305,10 +363,13 @@ async function getStatusHistory({ marketId, limit = 50, page = 1 }) {
     data: {
       marketId,
       history,
-      total,
-      page,
-      totalPages: Math.ceil(total / limit),
     },
+    meta: buildPaginationMeta({
+      total,
+      count: history.length,
+      page: safePage,
+      limit: safeLimit,
+    }),
   };
 }
 

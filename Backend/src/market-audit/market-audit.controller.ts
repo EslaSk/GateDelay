@@ -44,9 +44,23 @@ export class MarketAuditController {
     return this.marketAuditService.createLog(body);
   }
 
+  /**
+   * GET /market-audit/logs
+   *
+   * Paged read of the append-only chain, newest entry first, with the shared
+   * `meta` block (#916). `queryLogs()` still exists and still returns a bare
+   * array for `generateReport()`; it is deliberately not the wire format here,
+   * because a client paging a log needs to know how many records matched.
+   */
   @Get('logs')
   getLogs(@Query() query: AuditQueryDto) {
-    return this.marketAuditService.queryLogs(query);
+    const { limit, page, ...filters } = query;
+    const { logs, meta } = this.marketAuditService.queryLogsPage(
+      filters,
+      page,
+      limit,
+    );
+    return { success: true, data: logs, meta };
   }
 
   @Post('retention')

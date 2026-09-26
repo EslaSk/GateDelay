@@ -178,6 +178,96 @@ describe('MarketAuditService', () => {
     ).rejects.toThrow('Beta access gate is unavailable');
   });
 
+  // --- Pagination metadata (#916) ---
+
+  describe('queryLogsPage', () => {
+    // A local checker is needed because `queryLogsPage` is pure and does not
+    // depend on the DI container the outer `beforeEach` builds.
+    const checker = {
+      checkAccess: jest.fn().mockResolvedValue({ hasAccess: true }),
+    };
+
+    const seed = async (target: MarketAuditService, count: number) => {
+      for (let i = 0; i < count; i++) {
+        await target.createLog({
+          marketId: `m${i % 2}`,
+          operation: 'CREATE_MARKET',
+          actor: 'a',
+          details: `entry ${i}`,
+        });
+      }
+    };
+
+    it('returns the newest entry first', async () => {
+      const paged = new MarketAuditService(checker);
+      await seed(paged, 3);
+
+      const { logs } = paged.queryLogsPage({});
+
+      expect(logs).toHaveLength(3);
+      expect(logs[0].details).toBe('entry 2');
+      expect(logs[2].details).toBe('entry 0');
+    });
+
+    it('reports totals across all pages, not just the current one', async () => {
+      const paged = new MarketAuditService(checker);
+      await seed(paged, 5);
+
+      const { logs, meta } = paged.queryLogsPage({}, 2, 2);
+
+      expect(logs).toHaveLength(2);
+      expect(meta.total).toBe(5);
+      expect(meta.totalPages).toBe(3);
+      expect(meta.page).toBe(2);
+      expect(meta.limit).toBe(2);
+      expect(meta.count).toBe(2);
+      expect(meta.hasNextPage).toBe(true);
+      expect(meta.hasPrevPage).toBe(true);
+    });
+
+    it('reports a short final page', async () => {
+      const paged = new MarketAuditService(checker);
+      await seed(paged, 5);
+
+      const { logs, meta } = paged.queryLogsPage({}, 3, 2);
+
+      expect(logs).toHaveLength(1);
+      expect(meta.count).toBe(1);
+      expect(meta.hasNextPage).toBe(false);
+    });
+
+    it('applies the same filters as queryLogs', async () => {
+      const paged = new MarketAuditService(checker);
+      await seed(paged, 4);
+
+      const { logs, meta } = paged.queryLogsPage({ marketId: 'm1' });
+
+      expect(logs).toHaveLength(2);
+      expect(logs.every((l) => l.marketId === 'm1')).toBe(true);
+      expect(meta.total).toBe(2);
+    });
+
+    it('reports totalPages 0 for an empty result set', async () => {
+      const paged = new MarketAuditService(checker);
+      await seed(paged, 2);
+
+      const { logs, meta } = paged.queryLogsPage({ marketId: 'nonexistent' });
+
+      expect(logs).toHaveLength(0);
+      expect(meta.totalPages).toBe(0);
+      expect(meta.hasPrevPage).toBe(false);
+    });
+
+    it('clamps an out-of-range page instead of returning everything', async () => {
+      const paged = new MarketAuditService(checker);
+      await seed(paged, 3);
+
+      const { logs } = paged.queryLogsPage({}, 99, 2);
+
+      expect(logs).toHaveLength(0);
+    });
+  });
+
   it('no secrets or private keys appear in the service source file', () => {
     const servicePath = resolve(__dirname, 'market-audit.service.ts');
     const content = readFileSync(servicePath, 'utf8');

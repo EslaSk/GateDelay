@@ -83,6 +83,23 @@ const betaUserSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
+// Declared before `mongoose.model()` below, deliberately: Mongoose only builds
+// a model's indexes when it initialises that model, so a `schema.index()` call
+// placed after compilation is honoured only if nothing has touched the model
+// first. That ordering depends on module require order, which is not something
+// to leave to chance for the query paths the access gate runs on every request.
+
+/**
+ * `walletAddress` is already unique, which covers checkAccess()'s single-wallet
+ * lookup. The compound index below serves the access-gate read that filters on
+ * both columns (enrolled AND currently active) — without it every check that
+ * filters by status scans the whole collection before the unique index applies.
+ */
+betaUserSchema.index({ walletAddress: 1, status: 1 });
+
+/** Admin listings filter by lifecycle state and sort by enrolment order. */
+betaUserSchema.index({ status: 1, createdAt: -1 });
+
 const BetaUser = mongoose.models.BetaUser || mongoose.model('BetaUser', betaUserSchema);
 
 const BETA_FEATURES = ['market_creation', 'advanced_trading', 'ai_signals', 'early_resolution'];
