@@ -166,12 +166,11 @@ contract VoteWeight is Ownable, ReentrancyGuard {
 
     /// @notice Update the weight for an account based on current token balance
     /// @param account The account to update
-    /// @dev Reverts: with {NoWeightChange} when the account is already in sync.
+    /// @dev Reverts with {NoWeightChange} when the account is already in sync.
     ///      Callers that legitimately do not know whether a change is pending —
     ///      batch jobs, delegation flows — should use {syncWeight} instead of
     ///      swallowing this revert.
     /// @dev Access: No caller-specific access restriction is imposed.
-    /// @dev Reverts: `NoWeightChange` if `!syncWeight(account)` is true.
     function updateWeight(address account) public {
         if (!syncWeight(account)) revert NoWeightChange();
     }

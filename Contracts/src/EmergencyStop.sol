@@ -64,11 +64,9 @@ contract EmergencyStop is AccessControl {
     // -------------------------------------------------------------------------
 
     /// @notice Activates the emergency stop and records incident metadata.
-    /// @dev Reverts: if the stop is already active or the reason is empty.
+    /// @dev Reverts if the stop is already active or the reason is empty.
     /// @param reason Short description of why the protocol was halted.
     /// @dev Access: Caller must hold the EMERGENCY_ROLE role.
-    /// @dev Reverts: "Emergency already active" if `!_emergencyActive` is false. "Reason required"
-    ///     if `bytes(reason).length > 0` is false.
     function activateEmergencyStop(string calldata reason) external onlyRole(EMERGENCY_ROLE) {
         require(!_emergencyActive, "Emergency already active");
         require(bytes(reason).length > 0, "Reason required");
@@ -129,10 +127,8 @@ contract EmergencyStop is AccessControl {
     // -------------------------------------------------------------------------
 
     /// @notice Starts the recovery workflow while an emergency is active.
-    /// @dev Reverts: unless the stop is active and no recovery is already running.
+    /// @dev Reverts unless the stop is active and no recovery is already running.
     /// @dev Access: Caller must hold the RECOVERY_ROLE role.
-    /// @dev Reverts: "Emergency not active" if `_emergencyActive` is false. "Recovery already in
-    ///     progress" if `!_recoveryInProgress` is false.
     function initiateRecovery() external onlyRole(RECOVERY_ROLE) {
         require(_emergencyActive, "Emergency not active");
         require(!_recoveryInProgress, "Recovery already in progress");
