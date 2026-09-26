@@ -90,7 +90,7 @@ export class TradingHistoryService {
       limit,
       data: paginated,
       page: meta.page,
-      pages: meta.pages,
+      pages: meta.totalPages,
       meta,
     };
   }
