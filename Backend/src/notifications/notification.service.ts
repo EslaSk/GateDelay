@@ -10,8 +10,11 @@ import {
 import {
   SendNotificationDto,
   UpdatePreferencesDto,
+  GetNotificationsQueryDto,
 } from './dto/notification.dto';
 import { renderTemplate } from './notification.templates';
+import { paginate } from '../../utils/pagination';
+import type { PaginationMeta } from '../../utils/pagination';
 
 @Injectable()
 export class NotificationService {
@@ -71,6 +74,21 @@ export class NotificationService {
     return [...this.notifications.values()]
       .filter((n) => n.userId === userId)
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+
+  /**
+   * Page through a user's notifications with pagination metadata (#916).
+   *
+   * Split out from `getForUser` rather than changing its signature: the
+   * unpaged list is still the right shape for internal callers (e.g. the
+   * unread badge) that need every entry.
+   */
+  getForUserPage(
+    userId: string,
+    query: GetNotificationsQueryDto = {},
+  ): { notifications: Notification[]; meta: PaginationMeta } {
+    const { items, meta } = paginate(this.getForUser(userId), query);
+    return { notifications: items, meta };
   }
 
   markRead(userId: string, notificationId: string): Notification {

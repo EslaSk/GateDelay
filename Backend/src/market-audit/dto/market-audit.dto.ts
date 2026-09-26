@@ -51,6 +51,9 @@ import { ContainsNoSecrets } from './no-secrets.validator';
 /** Upper bound on a single `queryLogs` page. Caps response size and CPU. */
 export const MAX_QUERY_LIMIT = 1000;
 
+/** Upper bound on the page selector. See `AuditQueryDto.page`. */
+export const MAX_QUERY_PAGE = 10_000;
+
 /** Ten years. A retention window above this is indistinguishable from "never". */
 export const MAX_RETENTION_DAYS = 3650;
 
@@ -170,6 +173,20 @@ export class AuditQueryDto {
   @Min(1)
   @Max(MAX_QUERY_LIMIT, { message: `limit must not exceed ${MAX_QUERY_LIMIT}` })
   limit?: number;
+
+  /**
+   * 1-based page selector for paged reads (#916).
+   *
+   * Bounded above for the same reason `limit` is: an unbounded page number is a
+   * cheap way to force the server through every entry in the chain, and the
+   * response is worthless long before the log is exhausted.
+   */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt({ message: 'page must be an integer' })
+  @Min(1)
+  @Max(MAX_QUERY_PAGE, { message: `page must not exceed ${MAX_QUERY_PAGE}` })
+  page?: number;
 }
 
 export class RetentionPolicyDto {

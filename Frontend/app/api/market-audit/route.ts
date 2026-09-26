@@ -9,12 +9,20 @@ import { resolveApiBase, MissingApiBaseError } from "../../../lib/apiBase";
  * returns a JSON error instead of silently calling localhost.
  *
  * Supported filters (forwarded verbatim): `marketId`, `operation`, `actor`,
- * `from`, `to`, `limit`.
+ * `from`, `to`, `limit`, `page`.
  *
  * Upstream: GET `${NEXT_PUBLIC_API_URL}/market-audit/logs`
  */
 
-const FORWARDED_KEYS = ["marketId", "operation", "actor", "from", "to", "limit"] as const;
+const FORWARDED_KEYS = [
+  "marketId",
+  "operation",
+  "actor",
+  "from",
+  "to",
+  "limit",
+  "page",
+] as const;
 
 export async function GET(req: Request) {
   const url = new URL(req.url);

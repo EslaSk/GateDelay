@@ -1,6 +1,7 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import { createRequire } from 'module';
 import { MarketResolverService } from './market-resolver.service';
+import { ListMarketsQueryDto } from './dto/list-markets.dto';
 
 // Use the existing CommonJS tradeAggregator for real-time stats
 const nodeRequire = createRequire(__filename);
@@ -13,9 +14,16 @@ const tradeAggregator = nodeRequire('../../services/tradeAggregator') as {
 export class MarketsController {
   constructor(private readonly marketResolver: MarketResolverService) {}
 
+  /**
+   * GET /markets — paginated market list.
+   *
+   * `page` / `limit` come in through `ListMarketsQueryDto`; the registry is
+   * sliced in memory, and the response carries the standard `meta` block so
+   * markets, trades, audit logs and notifications page identically (#916).
+   */
   @Get()
-  async list() {
-    const markets = this.marketResolver.getAllMarkets();
+  async list(@Query() query: ListMarketsQueryDto) {
+    const { markets, meta } = this.marketResolver.getMarketsPage(query);
 
     const data = await Promise.all(
       markets.map(async (m) => {
@@ -39,6 +47,6 @@ export class MarketsController {
       }),
     );
 
-    return { success: true, data };
+    return { success: true, data, meta };
   }
 }

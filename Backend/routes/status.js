@@ -9,6 +9,7 @@
 
 const express = require('express');
 const statusService = require('../services/statusService');
+const { marketStatus: statusSchemas, validateRequest } = require('../dto');
 
 const router = express.Router();
 
@@ -49,8 +50,9 @@ const requireOperator = (req, res, next) => {
  */
 router.get(
   '/:marketId',
+  validateRequest({ params: statusSchemas.marketIdParam }, 'status.get'),
   handleErrors(async (req, res) => {
-    const { marketId } = req.params;
+    const { marketId } = req.validated.params;
     const result = await statusService.getMarketStatus(marketId);
     res.status(200).json(result);
   })
@@ -62,15 +64,20 @@ router.get(
  */
 router.get(
   '/:marketId/history',
+  validateRequest(
+    { params: statusSchemas.marketIdParam, query: statusSchemas.marketStatusHistoryQuery },
+    'status.history',
+  ),
   handleErrors(async (req, res) => {
-    const { marketId } = req.params;
-    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
-    const page = parseInt(req.query.page, 10) || 1;
+    const { marketId } = req.validated.params;
+    const { page, limit, fromStatus, toStatus } = req.validated.query;
 
     const result = await statusService.getStatusHistory({
       marketId,
       limit,
       page,
+      fromStatus,
+      toStatus,
     });
     res.status(200).json(result);
   })
@@ -89,17 +96,13 @@ router.get(
 router.post(
   '/:marketId/toggle',
   requireOperator,
+  validateRequest(
+    { params: statusSchemas.marketIdParam, body: statusSchemas.marketStatusToggleBody },
+    'status.toggle',
+  ),
   handleErrors(async (req, res) => {
-    const { marketId } = req.params;
-    const { status, notes } = req.body;
-
-    if (!status) {
-      return res.status(400).json({
-        success: false,
-        error: 'status field is required in request body',
-        code: 'VALIDATION_ERROR',
-      });
-    }
+    const { marketId } = req.validated.params;
+    const { status, notes } = req.validated.body;
 
     const result = await statusService.updateMarketStatus({
       marketId,
