@@ -64,8 +64,11 @@ contract EmergencyStop is AccessControl {
     // -------------------------------------------------------------------------
 
     /// @notice Activates the emergency stop and records incident metadata.
-    /// @dev Reverts if the stop is already active or the reason is empty.
+    /// @dev Reverts: if the stop is already active or the reason is empty.
     /// @param reason Short description of why the protocol was halted.
+    /// @dev Access: Caller must hold the EMERGENCY_ROLE role.
+    /// @dev Reverts: "Emergency already active" if `!_emergencyActive` is false. "Reason required"
+    ///     if `bytes(reason).length > 0` is false.
     function activateEmergencyStop(string calldata reason) external onlyRole(EMERGENCY_ROLE) {
         require(!_emergencyActive, "Emergency already active");
         require(bytes(reason).length > 0, "Reason required");
@@ -80,6 +83,8 @@ contract EmergencyStop is AccessControl {
 
     /// @notice Clears the emergency stop without using the recovery workflow.
     /// @dev Intended for authorized responders once the incident is resolved.
+    /// @dev Access: Caller must hold the EMERGENCY_ROLE role.
+    /// @dev Reverts: "Emergency not active" if `_emergencyActive` is false.
     function deactivateEmergencyStop() external onlyRole(EMERGENCY_ROLE) {
         require(_emergencyActive, "Emergency not active");
         
@@ -93,24 +98,28 @@ contract EmergencyStop is AccessControl {
 
     /// @notice Returns whether the emergency stop is currently active.
     /// @return True when protected operations should remain halted.
+    /// @dev Access: No caller-specific access restriction is imposed.
     function isEmergencyActive() external view returns (bool) {
         return _emergencyActive;
     }
 
     /// @notice Returns the reason attached to the current emergency state.
     /// @return The incident reason, or an empty string when inactive.
+    /// @dev Access: No caller-specific access restriction is imposed.
     function getEmergencyReason() external view returns (string memory) {
         return _emergencyReason;
     }
 
     /// @notice Returns the account that last activated the emergency stop.
     /// @return The activating address, or `address(0)` when inactive.
+    /// @dev Access: No caller-specific access restriction is imposed.
     function getEmergencyActivatedBy() external view returns (address) {
         return _emergencyActivatedBy;
     }
 
     /// @notice Returns when the emergency stop was last activated.
     /// @return Unix timestamp of activation, or zero when inactive.
+    /// @dev Access: No caller-specific access restriction is imposed.
     function getEmergencyActivatedAt() external view returns (uint256) {
         return _emergencyActivatedAt;
     }
@@ -120,7 +129,10 @@ contract EmergencyStop is AccessControl {
     // -------------------------------------------------------------------------
 
     /// @notice Starts the recovery workflow while an emergency is active.
-    /// @dev Reverts unless the stop is active and no recovery is already running.
+    /// @dev Reverts: unless the stop is active and no recovery is already running.
+    /// @dev Access: Caller must hold the RECOVERY_ROLE role.
+    /// @dev Reverts: "Emergency not active" if `_emergencyActive` is false. "Recovery already in
+    ///     progress" if `!_recoveryInProgress` is false.
     function initiateRecovery() external onlyRole(RECOVERY_ROLE) {
         require(_emergencyActive, "Emergency not active");
         require(!_recoveryInProgress, "Recovery already in progress");
@@ -131,6 +143,8 @@ contract EmergencyStop is AccessControl {
 
     /// @notice Completes recovery and resets all emergency metadata.
     /// @dev This also deactivates the emergency stop.
+    /// @dev Access: Caller must hold the RECOVERY_ROLE role.
+    /// @dev Reverts: "Recovery not in progress" if `_recoveryInProgress` is false.
     function completeRecovery() external onlyRole(RECOVERY_ROLE) {
         require(_recoveryInProgress, "Recovery not in progress");
         
@@ -145,6 +159,7 @@ contract EmergencyStop is AccessControl {
 
     /// @notice Returns whether a recovery workflow is currently underway.
     /// @return True when recovery has been initiated but not completed.
+    /// @dev Access: No caller-specific access restriction is imposed.
     function isRecoveryInProgress() external view returns (bool) {
         return _recoveryInProgress;
     }
@@ -155,6 +170,8 @@ contract EmergencyStop is AccessControl {
 
     /// @notice Grants the emergency responder role.
     /// @param account Address that should be allowed to toggle the stop.
+    /// @dev Access: Caller must hold the DEFAULT_ADMIN_ROLE role.
+    /// @dev Reverts: "Invalid address" if `account != address(0)` is false.
     function grantEmergencyRole(address account) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(account != address(0), "Invalid address");
         _grantRole(EMERGENCY_ROLE, account);
@@ -162,6 +179,8 @@ contract EmergencyStop is AccessControl {
 
     /// @notice Revokes the emergency responder role.
     /// @param account Address that should no longer be allowed to toggle the stop.
+    /// @dev Access: Caller must hold the DEFAULT_ADMIN_ROLE role.
+    /// @dev Reverts: "Invalid address" if `account != address(0)` is false.
     function revokeEmergencyRole(address account) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(account != address(0), "Invalid address");
         _revokeRole(EMERGENCY_ROLE, account);
@@ -169,6 +188,8 @@ contract EmergencyStop is AccessControl {
 
     /// @notice Grants the recovery operator role.
     /// @param account Address that should be allowed to run recovery.
+    /// @dev Access: Caller must hold the DEFAULT_ADMIN_ROLE role.
+    /// @dev Reverts: "Invalid address" if `account != address(0)` is false.
     function grantRecoveryRole(address account) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(account != address(0), "Invalid address");
         _grantRole(RECOVERY_ROLE, account);
@@ -176,6 +197,8 @@ contract EmergencyStop is AccessControl {
 
     /// @notice Revokes the recovery operator role.
     /// @param account Address that should no longer be allowed to run recovery.
+    /// @dev Access: Caller must hold the DEFAULT_ADMIN_ROLE role.
+    /// @dev Reverts: "Invalid address" if `account != address(0)` is false.
     function revokeRecoveryRole(address account) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(account != address(0), "Invalid address");
         _revokeRole(RECOVERY_ROLE, account);
@@ -184,6 +207,7 @@ contract EmergencyStop is AccessControl {
     /// @notice Checks whether an account has the emergency responder role.
     /// @param account Address to inspect.
     /// @return True when the account has `EMERGENCY_ROLE`.
+    /// @dev Access: Caller permissions are checked against the sender or assigned roles.
     function hasEmergencyRole(address account) external view returns (bool) {
         return hasRole(EMERGENCY_ROLE, account);
     }
@@ -191,6 +215,7 @@ contract EmergencyStop is AccessControl {
     /// @notice Checks whether an account has the recovery operator role.
     /// @param account Address to inspect.
     /// @return True when the account has `RECOVERY_ROLE`.
+    /// @dev Access: Caller permissions are checked against the sender or assigned roles.
     function hasRecoveryRole(address account) external view returns (bool) {
         return hasRole(RECOVERY_ROLE, account);
     }
