@@ -46,6 +46,7 @@ import { EventNotificationModule } from './event-notifications/event-notificatio
 import { BridgeModule } from './bridge/bridge.module';
 import { NftModule } from './nft/nft.module';
 import { BalanceModule } from './balance/balance.module';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
@@ -113,6 +114,7 @@ import { BalanceModule } from './balance/balance.module';
     BridgeModule,
     NftModule,
     BalanceModule,
+    HealthModule,
   ],
   controllers: [AppController],
   providers: [AppService],

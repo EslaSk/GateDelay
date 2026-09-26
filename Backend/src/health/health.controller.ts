@@ -1,25 +1,40 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Req, Res } from '@nestjs/common';
+import * as healthCheckService from '../../services/healthCheck';
 
 @Controller('health')
 export class HealthController {
   @Get()
-  check() {
-    return {
-      status: 'ok',
-      timestamp: new Date().toISOString(),
+  async check(@Req() req: any, @Res() res: any) {
+    const report = await healthCheckService.generateHealthReport();
+    const statusCode = report.status === 'DOWN' ? 503 : 200;
+
+    return res.status(statusCode).json({
+      status: report.status,
+      timestamp: report.timestamp,
       service: 'gatedelay-backend-nest',
-    };
+      requestId: req.requestId,
+    });
   }
 
   @Get('details')
-  details() {
+  async details(@Req() req: any, @Res() res: any) {
+    const report = await healthCheckService.generateHealthReport();
+    const statusCode = report.status === 'DOWN' ? 503 : 200;
+
+    return res.status(statusCode).json({
+      ...report,
+      service: 'gatedelay-backend-nest',
+      requestId: req.requestId,
+    });
+  }
+
+  @Get('live')
+  live(@Req() req: any) {
     return {
       status: 'ok',
       timestamp: new Date().toISOString(),
       service: 'gatedelay-backend-nest',
-      uptime: process.uptime(),
-      memory: process.memoryUsage(),
-      environment: process.env.NODE_ENV || 'development',
+      requestId: req.requestId,
     };
   }
 }

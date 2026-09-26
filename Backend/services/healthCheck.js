@@ -8,17 +8,20 @@
 
 const mongoose = require('mongoose');
 const { ethers } = require('ethers');
+const Redis = require('ioredis');
+const axios = require('axios');
 
 // Helper to determine component status based on check results
 function getOverallStatus(components) {
   const values = Object.values(components);
   if (values.some(v => v.status === 'DOWN')) {
     // If the database is DOWN, the system is DOWN.
-    if (components.database.status === 'DOWN') {
+    if (components.mongodb.status === 'DOWN') {
       return 'DOWN';
     }
     return 'DEGRADED';
   }
+  if (values.some(v => v.status === 'DEGRADED')) return 'DEGRADED';
   return 'UP';
 }
 
@@ -60,7 +63,14 @@ function getMongooseStateName(state) {
  * Check blockchain RPC provider connectivity.
  */
 async function checkBlockchain() {
-  const rpcUrl = process.env.RPC_URL || process.env.ETH_PROVIDER_URL || 'https://cloudflare-eth.com';
+  const rpcUrl = process.env.RPC_URL || process.env.BLOCKCHAIN_RPC_URL || process.env.ETH_PROVIDER_URL;
+
+  if (!rpcUrl) {
+    return {
+      status: 'DEGRADED',
+      error: 'RPC_URL or BLOCKCHAIN_RPC_URL is not configured',
+    };
+  }
   
   try {
     const provider = new ethers.JsonRpcProvider(rpcUrl, null, {
@@ -95,28 +105,109 @@ async function checkBlockchain() {
  * Check Redis connectivity.
  */
 async function checkRedis() {
+  const redisUrl = process.env.REDIS_URL;
   const redisHost = process.env.REDIS_HOST || 'localhost';
-  const redisPort = process.env.REDIS_PORT || 6379;
+  const redisPort = Number(process.env.REDIS_PORT || 6379);
+  const client = redisUrl
+    ? new Redis(redisUrl, { lazyConnect: true, maxRetriesPerRequest: 0 })
+    : new Redis({
+        host: redisHost,
+        port: redisPort,
+        password: process.env.REDIS_PASSWORD || undefined,
+        db: Number(process.env.REDIS_DB || 0),
+        lazyConnect: true,
+        maxRetriesPerRequest: 0,
+      });
+  client.on('error', () => {
+    // Health reports connection failures in-band; avoid noisy ioredis event logs.
+  });
 
-  // Since ioredis connects asynchronously, we check if we can simulate connection
-  // or verify it. If there is a global or shared redis client, we check its status.
-  // For standard monitoring, we return status based on connection parameters or simulated ping.
   try {
-    // In a real environment, we'd ping the active Redis client if available.
-    // If not, we perform a quick check.
-    const isConfigured = !!process.env.REDIS_HOST;
+    await withTimeout(client.connect(), 3000, 'Redis connect timeout after 3000ms');
+    const pong = await withTimeout(client.ping(), 3000, 'Redis ping timeout after 3000ms');
     return {
       status: 'UP',
       details: {
-        host: redisHost,
-        port: redisPort,
-        configured: isConfigured,
+        endpoint: redisUrl ? maskUrl(redisUrl) : `${redisHost}:${redisPort}`,
+        ping: pong,
       }
+    };
+  } catch (error) {
+    return {
+      status: 'DOWN',
+      error: error.message,
+    };
+  } finally {
+    client.disconnect();
+  }
+}
+
+async function checkAviationStack() {
+  const apiKey = process.env.AVIATION_STACK_API_KEY;
+  if (!apiKey || apiKey.startsWith('replace_with')) {
+    return {
+      status: 'DEGRADED',
+      error: 'AVIATION_STACK_API_KEY is not configured',
+    };
+  }
+
+  try {
+    const response = await axios.get('http://api.aviationstack.com/v1/flights', {
+      params: { access_key: apiKey, limit: 1 },
+      timeout: 5000,
+    });
+
+    const providerError = response.data?.error;
+    if (providerError) {
+      return {
+        status: 'DEGRADED',
+        error: providerError.message || providerError.code || 'AviationStack returned an error',
+      };
+    }
+
+    return {
+      status: 'UP',
+      details: {
+        provider: 'aviationstack',
+        records: Array.isArray(response.data?.data) ? response.data.data.length : 0,
+      },
     };
   } catch (error) {
     return {
       status: 'DEGRADED',
       error: error.message,
+    };
+  }
+}
+
+async function checkAiProvider() {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey || apiKey.startsWith('replace_with')) {
+    return {
+      status: 'DEGRADED',
+      error: 'GROQ_API_KEY is not configured; AI analysis falls back to mock data',
+      details: { provider: 'groq', mode: 'mock' },
+    };
+  }
+
+  try {
+    const response = await axios.get('https://api.groq.com/openai/v1/models', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      timeout: 5000,
+    });
+
+    return {
+      status: 'UP',
+      details: {
+        provider: 'groq',
+        models: Array.isArray(response.data?.data) ? response.data.data.length : undefined,
+      },
+    };
+  } catch (error) {
+    return {
+      status: 'DEGRADED',
+      error: error.response?.data?.error?.message || error.message,
+      details: { provider: 'groq' },
     };
   }
 }
@@ -149,14 +240,16 @@ function getSystemMetrics() {
  * @returns {Promise<object>} Consolidated health report
  */
 async function generateHealthReport() {
-  const [database, blockchain, redis] = await Promise.all([
+  const [mongodb, redis, rpc, aviationStack, aiProvider] = await Promise.all([
     checkDatabase(),
-    checkBlockchain(),
     checkRedis(),
+    checkBlockchain(),
+    checkAviationStack(),
+    checkAiProvider(),
   ]);
 
   const system = getSystemMetrics();
-  const components = { database, blockchain, redis, system };
+  const components = { mongodb, redis, rpc, aviationStack, aiProvider, system };
   
   const status = getOverallStatus(components);
 
@@ -168,8 +261,21 @@ async function generateHealthReport() {
 }
 
 module.exports = {
+  checkAiProvider,
+  checkAviationStack,
   checkDatabase,
   checkBlockchain,
   checkRedis,
   generateHealthReport,
 };
+
+function withTimeout(promise, timeoutMs, message) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(message)), timeoutMs)),
+  ]);
+}
+
+function maskUrl(url) {
+  return url.replace(/:\/\/([^:@/]+):([^@/]+)@/, '://$1:***@');
+}

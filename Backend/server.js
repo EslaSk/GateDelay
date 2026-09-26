@@ -4,6 +4,7 @@ const cors = require('cors');
 // Local routes (services and routes co-located in backend/)
 const migrationRoutes = require('./routes/migration');
 const rollbackRoutes = require('./routes/rollback');
+const healthRoutes = require('./routes/health');
 
 // Aliased routes (canonical files live in Backend/routes/)
 const betaRoutes = require('../Backend/routes/beta');
@@ -11,6 +12,17 @@ const oncallRoutes = require('../Backend/routes/oncall');
 const restoreRoutes = require('../Backend/routes/restore');
 const upgradeCoordinator = require('./services/upgradeCoordinator');
 const upgradeManager = require('./jobs/upgradeManager');
+const {
+  expressCorrelationMiddleware,
+  log,
+  withJobContext,
+} = require('./utils/correlation');
+const {
+  expressErrorEnvelopeMiddleware,
+  expressErrorHandler,
+  expressNotFoundHandler,
+  sendError,
+} = require('./utils/errorEnvelope');
 
 // API protection middlewares (Backend/API_PROTECTION_README.md) — same stack as NestJS (Backend/src/main.ts)
 let ddosGuard, throttle, versionMiddleware, backwardCompatMiddleware;
@@ -28,6 +40,8 @@ const PORT = process.env.PORT || 4000;
 
 app.use(cors());
 app.use(express.json());
+app.use(expressCorrelationMiddleware);
+app.use(expressErrorEnvelopeMiddleware);
 
 // Apply API protection globally if available (order: DDoS → throttle → version → compat)
 try {
@@ -41,9 +55,8 @@ try {
   console.warn('[server] API protection setup failed:', err.message);
 }
 
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
+app.use('/health', healthRoutes);
+app.use('/api/health', healthRoutes);
 
 app.use('/api/migrations', migrationRoutes);
 app.use('/api/rollback', rollbackRoutes);
@@ -55,7 +68,11 @@ app.post('/api/upgrades', (req, res) => {
   try {
     const { version, services, scheduledFor } = req.body;
     if (!version) {
-      return res.status(400).json({ success: false, error: 'version is required' });
+      return sendError(res, { message: 'version is required' }, {
+        statusCode: 400,
+        code: 'VALIDATION_ERROR',
+        requestId: req.requestId,
+      });
     }
     const upgrade = upgradeCoordinator.createUpgrade({ version, services });
     if (scheduledFor) {
@@ -63,7 +80,7 @@ app.post('/api/upgrades', (req, res) => {
     }
     res.status(201).json({ success: true, data: upgrade });
   } catch (err) {
-    res.status(400).json({ success: false, error: err.message });
+    sendError(res, err, { statusCode: 400, requestId: req.requestId });
   }
 });
 
@@ -72,7 +89,7 @@ app.post('/api/upgrades/:id/start', async (req, res) => {
     const upgrade = await upgradeCoordinator.startUpgrade(req.params.id);
     res.json({ success: true, data: upgrade });
   } catch (err) {
-    res.status(400).json({ success: false, error: err.message });
+    sendError(res, err, { statusCode: 400, requestId: req.requestId });
   }
 });
 
@@ -83,7 +100,11 @@ app.get('/api/upgrades', (_req, res) => {
 app.get('/api/upgrades/:id', (req, res) => {
   const status = upgradeCoordinator.getProgress(req.params.id);
   if (!status) {
-    return res.status(404).json({ success: false, error: 'Upgrade not found' });
+    return sendError(res, { message: 'Upgrade not found' }, {
+      statusCode: 404,
+      code: 'NOT_FOUND',
+      requestId: req.requestId,
+    });
   }
   res.json({ success: true, data: status });
 });
@@ -93,14 +114,23 @@ app.post('/api/upgrades/:id/rollback', async (req, res) => {
     const result = await upgradeCoordinator.rollbackUpgrade(req.params.id);
     res.json({ success: true, data: result });
   } catch (err) {
-    res.status(400).json({ success: false, error: err.message });
+    sendError(res, err, { statusCode: 400, requestId: req.requestId });
   }
 });
 
-upgradeManager.start();
+withJobContext('upgradeManager.start', {}, ({ requestId }) => {
+  log('info', 'Starting upgrade manager', { requestId, job: 'upgradeManager.start' });
+  upgradeManager.start();
+});
+
+app.use(expressNotFoundHandler);
+app.use(expressErrorHandler);
 
 app.listen(PORT, () => {
-  console.log(`GateDelay backend running on port ${PORT}`);
+  log('info', 'GateDelay legacy Express backend running', {
+    service: 'gatedelay-backend-express',
+    port: PORT,
+  });
 });
 
 // Boot the standalone heartbeat server (default HEARTBEAT_PORT=4001) in the

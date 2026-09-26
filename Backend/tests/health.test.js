@@ -31,9 +31,11 @@ describe('Health Check Service', () => {
     const report = await healthCheckService.generateHealthReport();
     expect(report.status).toBeDefined();
     expect(report.timestamp).toBeDefined();
-    expect(report.components.database).toBeDefined();
-    expect(report.components.blockchain).toBeDefined();
+    expect(report.components.mongodb).toBeDefined();
+    expect(report.components.rpc).toBeDefined();
     expect(report.components.redis).toBeDefined();
+    expect(report.components.aviationStack).toBeDefined();
+    expect(report.components.aiProvider).toBeDefined();
     expect(report.components.system).toBeDefined();
   });
 });

@@ -2,6 +2,8 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { HttpErrorEnvelopeFilter } from './common/http-error-envelope.filter';
+import { expressCorrelationMiddleware, log } from '../utils/correlation';
 
 // API protection middlewares (Backend/API_PROTECTION_README.md)
 // CommonJS modules under Backend/middleware — required to boot under both NestJS and legacy Express
@@ -18,6 +20,7 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   app.enableCors({ origin: process.env.FRONTEND_URL || '*' });
+  app.use(expressCorrelationMiddleware);
 
   // Apply API protection globally (see API_PROTECTION_README.md)
   // Order: DDoS → throttle → versioning → backward-compat
@@ -60,6 +63,7 @@ async function bootstrap() {
       validationError: { target: false, value: false },
     }),
   );
+  app.useGlobalFilters(new HttpErrorEnvelopeFilter());
 
   app.setGlobalPrefix('api');
 
@@ -74,6 +78,11 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('api/docs', app, document);
 
-  await app.listen(process.env.PORT ?? 3000);
+  const port = process.env.PORT ?? 4000;
+  await app.listen(port);
+  log('info', 'GateDelay Nest backend started', {
+    service: 'gatedelay-backend-nest',
+    port,
+  });
 }
-bootstrap();
+void bootstrap();
