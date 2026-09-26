@@ -272,6 +272,7 @@ function SettingsPageContent() {
             >
               <ToggleSwitch
                 checked={settings.notifications.email}
+                aria-label="Toggle email notifications"
                 onChange={(value) => handleNotificationToggle("email", value)}
               />
             </SettingsRow>
@@ -282,6 +283,7 @@ function SettingsPageContent() {
             >
               <ToggleSwitch
                 checked={settings.notifications.push}
+                aria-label="Toggle push notifications"
                 onChange={(value) => handleNotificationToggle("push", value)}
               />
             </SettingsRow>
@@ -292,6 +294,7 @@ function SettingsPageContent() {
             >
               <ToggleSwitch
                 checked={settings.notifications.priceAlerts}
+                aria-label="Toggle price alerts"
                 onChange={(value) => handleNotificationToggle("priceAlerts", value)}
               />
             </SettingsRow>
@@ -302,6 +305,7 @@ function SettingsPageContent() {
             >
               <ToggleSwitch
                 checked={settings.notifications.marketUpdates}
+                aria-label="Toggle market updates"
                 onChange={(value) => handleNotificationToggle("marketUpdates", value)}
               />
             </SettingsRow>
@@ -312,6 +316,7 @@ function SettingsPageContent() {
             >
               <ToggleSwitch
                 checked={settings.notifications.tradeConfirmations}
+                aria-label="Toggle trade confirmations"
                 onChange={(value) => handleNotificationToggle("tradeConfirmations", value)}
               />
             </SettingsRow>
@@ -322,6 +327,7 @@ function SettingsPageContent() {
             >
               <ToggleSwitch
                 checked={settings.notifications.newsletter}
+                aria-label="Toggle newsletter"
                 onChange={(value) => handleNotificationToggle("newsletter", value)}
               />
             </SettingsRow>
@@ -356,6 +362,7 @@ function SettingsPageContent() {
             >
               <ToggleSwitch
                 checked={settings.trading.confirmTransactions}
+                aria-label="Toggle transaction confirmations"
                 onChange={(value) => handleTradingToggle("confirmTransactions", value)}
               />
             </SettingsRow>
@@ -366,6 +373,7 @@ function SettingsPageContent() {
             >
               <ToggleSwitch
                 checked={settings.trading.showAdvancedOptions}
+                aria-label="Toggle advanced trading options"
                 onChange={(value) => handleTradingToggle("showAdvancedOptions", value)}
               />
             </SettingsRow>
@@ -376,6 +384,7 @@ function SettingsPageContent() {
             >
               <ToggleSwitch
                 checked={settings.trading.autoApprove}
+                aria-label="Toggle auto-approve transactions"
                 onChange={(value) => handleTradingToggle("autoApprove", value)}
               />
             </SettingsRow>
@@ -410,6 +419,7 @@ function SettingsPageContent() {
             >
               <ToggleSwitch
                 checked={settings.privacy.showProfile}
+                aria-label="Toggle public profile visibility"
                 onChange={(value) => handlePrivacyToggle("showProfile", value)}
               />
             </SettingsRow>
@@ -420,6 +430,7 @@ function SettingsPageContent() {
             >
               <ToggleSwitch
                 checked={settings.privacy.showPortfolio}
+                aria-label="Toggle public portfolio visibility"
                 onChange={(value) => handlePrivacyToggle("showPortfolio", value)}
               />
             </SettingsRow>
@@ -430,6 +441,7 @@ function SettingsPageContent() {
             >
               <ToggleSwitch
                 checked={settings.privacy.showActivity}
+                aria-label="Toggle public trading activity"
                 onChange={(value) => handlePrivacyToggle("showActivity", value)}
               />
             </SettingsRow>
@@ -440,6 +452,7 @@ function SettingsPageContent() {
             >
               <ToggleSwitch
                 checked={settings.privacy.analyticsEnabled}
+                aria-label="Toggle anonymous analytics"
                 onChange={(value) => handlePrivacyToggle("analyticsEnabled", value)}
               />
             </SettingsRow>
@@ -459,6 +472,7 @@ function SettingsPageContent() {
             >
               <ToggleSwitch
                 checked={settings.display.compactMode}
+                aria-label="Toggle compact mode"
                 onChange={(value) => handleDisplayToggle("compactMode", value)}
               />
             </SettingsRow>
@@ -469,6 +483,7 @@ function SettingsPageContent() {
             >
               <ToggleSwitch
                 checked={settings.display.showBalances}
+                aria-label="Toggle balance visibility"
                 onChange={(value) => handleDisplayToggle("showBalances", value)}
               />
             </SettingsRow>
@@ -479,6 +494,7 @@ function SettingsPageContent() {
             >
               <ToggleSwitch
                 checked={settings.display.animationsEnabled}
+                aria-label="Toggle animations"
                 onChange={(value) => handleDisplayToggle("animationsEnabled", value)}
               />
             </SettingsRow>
@@ -489,6 +505,7 @@ function SettingsPageContent() {
             >
               <ToggleSwitch
                 checked={settings.display.soundEnabled}
+                aria-label="Toggle sound effects"
                 onChange={(value) => handleDisplayToggle("soundEnabled", value)}
               />
             </SettingsRow>

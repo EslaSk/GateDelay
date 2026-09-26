@@ -363,6 +363,7 @@ function QuickTradeWidgetInner() {
             onClick={() => setOneClickMode(!oneClickMode)}
             className={`w-9 h-5 rounded-full p-0.5 transition-colors relative flex items-center ${oneClickMode ? "bg-blue-600" : "bg-zinc-300 dark:bg-zinc-800"}`}
             aria-label="Toggle One-Click Mode"
+            title="Toggle One-Click Mode"
           >
             <motion.div 
               layout 

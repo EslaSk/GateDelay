@@ -164,6 +164,7 @@ export default function ConnectModal({ isOpen, onClose }: ConnectModalProps) {
               <button
                 onClick={onClose}
                 aria-label="Close modal"
+                title="Close wallet connection modal"
                 className="rounded-lg p-1.5 transition-colors hover:opacity-70"
                 style={{ color: "var(--muted)" }}
               >

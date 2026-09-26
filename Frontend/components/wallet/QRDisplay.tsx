@@ -509,6 +509,7 @@ export default function QRDisplay({
           <button
             onClick={handleCopy}
             aria-label="Copy wallet address"
+            title="Copy wallet address"
             className="flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-all hover:opacity-80"
             style={{
               background: copied ? "#22c55e20" : "var(--card)",
