@@ -1,6 +1,5 @@
 import { Controller, Get, Req, Res } from '@nestjs/common';
-
-const healthCheckService = require('../../services/healthCheck');
+import * as healthCheckService from '../../services/healthCheck';
 
 @Controller('health')
 export class HealthController {

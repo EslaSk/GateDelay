@@ -1,8 +1,5 @@
 import { Injectable, NestMiddleware } from '@nestjs/common';
-
-const {
-  expressCorrelationMiddleware,
-} = require('../../utils/correlation');
+import { expressCorrelationMiddleware } from '../../utils/correlation';
 
 @Injectable()
 export class RequestCorrelationMiddleware implements NestMiddleware {

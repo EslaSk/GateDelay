@@ -4,8 +4,7 @@ import {
   ExceptionFilter,
   HttpException,
 } from '@nestjs/common';
-
-const { buildErrorEnvelope } = require('../../utils/errorEnvelope');
+import { buildErrorEnvelope } from '../../utils/errorEnvelope';
 
 @Catch()
 export class HttpErrorEnvelopeFilter implements ExceptionFilter {

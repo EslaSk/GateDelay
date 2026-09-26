@@ -3,11 +3,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { HttpErrorEnvelopeFilter } from './common/http-error-envelope.filter';
-
-const {
-  expressCorrelationMiddleware,
-  log,
-} = require('../utils/correlation');
+import { expressCorrelationMiddleware, log } from '../utils/correlation';
 
 // API protection middlewares (Backend/API_PROTECTION_README.md)
 // CommonJS modules under Backend/middleware — required to boot under both NestJS and legacy Express
@@ -89,4 +85,4 @@ async function bootstrap() {
     port,
   });
 }
-bootstrap();
+void bootstrap();
