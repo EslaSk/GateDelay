@@ -5,6 +5,7 @@
 
 const express = require('express');
 const healthCheckService = require('../services/healthCheck');
+const { sendError } = require('../utils/errorEnvelope');
 
 const router = express.Router();
 
@@ -14,10 +15,10 @@ const handleErrors = (fn) => async (req, res, next) => {
     return await fn(req, res, next);
   } catch (error) {
     console.error('Health Check Route Error:', error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message,
+    sendError(res, error, {
+      statusCode: 500,
       code: 'HEALTH_CHECK_ERROR',
+      requestId: req.requestId,
     });
   }
 };
@@ -34,10 +35,10 @@ router.get(
     const statusCode = report.status === 'DOWN' ? 503 : 200;
     
     res.status(statusCode).json({
-      success: statusCode === 200,
       status: report.status,
       timestamp: report.timestamp,
       message: `System operational status is ${report.status}`,
+      requestId: req.requestId,
     });
   })
 );
@@ -54,10 +55,19 @@ router.get(
     const statusCode = report.status === 'DOWN' ? 503 : 200;
     
     res.status(statusCode).json({
-      success: statusCode === 200,
       ...report,
+      requestId: req.requestId,
     });
   })
 );
+
+router.get('/live', (req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    service: 'gatedelay-backend-express',
+    requestId: req.requestId,
+  });
+});
 
 module.exports = router;

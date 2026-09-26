@@ -1,6 +1,6 @@
 # GateDelay Backend - Local Setup Guide
 
-This document provides comprehensive instructions for setting up and running the GateDelay NestJS backend locally.
+This document provides local setup details for the GateDelay backend. For the canonical entrypoints, ports, health endpoints, and observability contract, see [RUNBOOK.md](./RUNBOOK.md).
 
 ## Prerequisites
 
@@ -82,7 +82,7 @@ Edit `.env` and set the following **required** variables:
 
 ```bash
 # Application
-PORT=3000
+PORT=4000
 JWT_SECRET=<generate-strong-secret-here>
 JWT_REFRESH_SECRET=<generate-different-strong-secret-here>
 JWT_EXPIRES_IN=15m
@@ -215,14 +215,14 @@ npm run start
 npm run start:prod
 ```
 
-The server will start on `http://localhost:3000` (or the PORT specified in `.env`).
+The server will start on `http://localhost:4000` with the checked-in `.env.example` value (or the `PORT` specified in `.env`).
 
 ### Verify Startup
 
 Check the API is responding:
 
 ```bash
-curl http://localhost:3000/api
+curl http://localhost:4000/api/health
 ```
 
 ## Available Commands
@@ -305,10 +305,8 @@ The following items require additional work beyond this initial documentation:
    - Add proper type definitions for `any` typed values
    - Remove unused imports and variables
 
-6. **Optional: Service Health Checks**
-   - Add MongoDB connection health check endpoint
-   - Add Redis connection health check endpoint
-   - Implement graceful shutdown for database connections
+6. **Optional: Graceful shutdown**
+   - Implement coordinated shutdown for database, Redis, and job workers
 
 ## Troubleshooting
 

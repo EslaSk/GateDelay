@@ -2,7 +2,7 @@
 
 The backend mixes a lightweight Express layer (`routes/`, `services/`, `models/`, all CommonJS), background services, and a newer Nest-based `src/` app.
 
-> **Note on entrypoints.** There is no `Backend/server.js`; the Express *server* lives in the sibling lowercase `backend/` package. What sits under `Backend/` is the Express route and model layer, which the Nest app and the smoke scripts load directly. `npm run start:dev` (`nest start --watch`) is the canonical dev server for this package. `DUAL_ENTRYPOINTS.md` predates that split and still describes a `Backend/server.js` boot path that no longer exists. Start by copying `.env.example` to `.env` and filling in the placeholders for the services you plan to run.
+> **Canonical startup docs.** Use [RUNBOOK.md](./RUNBOOK.md) for backend entrypoints, ports, health endpoints, request IDs, error envelopes, and environment setup. `npm run start:dev` (`nest start --watch`) is the canonical dev server. `Backend/server.js` is the legacy Express entrypoint for unmigrated CommonJS routes only.
 
 ## Required environment variables
 
@@ -25,10 +25,10 @@ npm install
 ## Run
 
 ```bash
-npm run dev
+npm run start:dev
 ```
 
-Use `npm run start:dev` for the NestJS development API. The migration REST API is owned by the Express entrypoint:
+The migration REST API is owned by the legacy Express entrypoint:
 
 ```bash
 npm run express:dev
@@ -289,15 +289,7 @@ Verify that the module loads cleanly with:
 npm run test:deprecation
 ```
 
-The backend exposes health check endpoints for monitoring and CI/CD probes:
-
-**Express server (port 4000):**
-- `GET /health` - Basic health check with status and timestamp
-- `GET /health/details` - Comprehensive health report including database, blockchain, Redis, and system components
-
-**NestJS (port 3000):**
-- `GET /api/health` - Basic health check with service info
-- `GET /api/health/details` - Detailed health with uptime, memory, and environment info
+The backend exposes health check endpoints for monitoring and CI/CD probes. See [RUNBOOK.md](./RUNBOOK.md#health-endpoints) for the canonical list. Both runtimes report MongoDB, Redis, RPC, AviationStack, AI provider, and process health.
 
 ## PagerDuty alerting
 
@@ -333,10 +325,7 @@ The backend exposes market operational status and uptime tracking API endpoints:
 ## Compile and run the project
 
 ```bash
-# NestJS development
-$ npm run start
-
-# NestJS watch mode
+# NestJS watch mode, canonical for local development
 $ npm run start:dev
 
 # NestJS debug mode
