@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useId } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, ChevronFirst, ChevronLast, Filter } from "lucide-react";
 import { format, parseISO, isValid } from "date-fns";
@@ -70,6 +70,9 @@ export default function TradePagination({
   const [startDate, setStartDate] = useState<string>("");
   const [endDate, setEndDate] = useState<string>("");
   const queryClient = useQueryClient();
+  
+  // Generate unique IDs for form controls to support multiple component instances
+  const startDateId = useId();
 
   const { data, isLoading, isError, isFetching } = useQuery<TradeHistoryResponse>({
     queryKey: ["trades", pair, page, pageSize, sideFilter, startDate, endDate],
@@ -163,10 +166,11 @@ export default function TradePagination({
       {showFilters && (
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1">
-            <label className="text-xs" style={{ color: "var(--muted)" }}>
+            <label htmlFor={startDateId} className="text-xs" style={{ color: "var(--muted)" }}>
               Start Date
             </label>
             <input
+              id={startDateId}
               type="date"
               value={startDate}
               onChange={(e) => {
