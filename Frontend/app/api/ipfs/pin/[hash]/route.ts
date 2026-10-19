@@ -1,24 +1,23 @@
 import { NextResponse } from "next/server";
-import { pinHash } from "@/lib/ipfsStore";
+import { pinHash, getStorageStatus } from "@/lib/ipfsStore";
 
 /**
  * POST /api/ipfs/pin/[hash]
  *
- * Pins an already-uploaded IPFS hash in the in-memory `lib/ipfsStore` shim
- * that mirrors Backend/services/ipfsService.js. Called by `useIPFS.pin` from
- * `MarketIPFSPanel` on `/markets/create` after a successful upload.
+ * Requests provider-confirmed pinning for an already-uploaded IPFS hash.
  *
- * Optional JSON body: `{ name?: string }` — a pin label stored alongside the
- * hash. An empty body is valid because the name is optional.
+ * #1190 – `pinHash` now follows the full provider lifecycle:
+ *   requested → pending → pinned | failed
+ * The response reflects the provider-confirmed state, not an optimistic local
+ * write. `data.pinned` is `true` only when the provider confirmed the pin.
  *
- * This is an API route, not a UI page. It never renders layout or CSS.
- * Wallet connect and navbar come from `app/layout.tsx`; this handler mounts
- * no chrome of its own.
+ * Optional JSON body: `{ name?: string }` — a pin label forwarded to the
+ * provider. An empty body is valid because the name is optional.
  *
- * Every failure path returns structured JSON with a stable `code` so the app
- * shell can surface the reason instead of a blank screen:
+ * Error codes:
  * - VALIDATION_ERROR — missing/empty/malformed hash or invalid body
- * - NOT_FOUND — hash is not in the in-memory store (upload first)
+ * - NOT_FOUND — hash is not in the store (upload first)
+ * - PIN_FAILED — provider rejected or timed out; see `data.pinStatus`
  * - INTERNAL_ERROR — unexpected runtime fault
  */
 
@@ -99,11 +98,33 @@ export async function POST(
   }
 
   try {
-    await pinHash(trimmedHash, name);
+    // pinHash throws if the hash is not found; returns false if provider fails
+    const confirmed = await pinHash(trimmedHash, name);
+
+    if (!confirmed) {
+      // Provider rejected or timed out — fetch persisted status for details
+      const status = await getStorageStatus(trimmedHash);
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Provider could not confirm the pin",
+          code: "PIN_FAILED",
+          data: {
+            hash: trimmedHash,
+            pinned: false,
+            pinStatus: status.pinStatus,
+            pinRetries: status.pinRetries,
+            pinError: status.pinError,
+          },
+        },
+        { status: 502 },
+      );
+    }
+
     return NextResponse.json({
       success: true,
       message: `Hash ${trimmedHash} pinned successfully`,
-      data: { hash: trimmedHash, pinned: true },
+      data: { hash: trimmedHash, pinned: true, pinStatus: "pinned" },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

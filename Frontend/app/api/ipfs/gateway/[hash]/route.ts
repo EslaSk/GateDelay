@@ -5,7 +5,7 @@ import { getGatewayUrl, getStorageStatus } from "@/lib/ipfsStore";
  * GET /api/ipfs/gateway/[hash]
  *
  * Resolves a gateway URL for an IPFS hash and reports the storage status for
- * that hash (from the in-memory `lib/ipfsStore` shim). The gateway base comes
+ * that hash (from the `lib/ipfsStore` adapter). The gateway base comes
  * from `NEXT_PUBLIC_IPFS_GATEWAY` (see `../.env.example`) or the public Pinata
  * gateway fallback.
  *
@@ -48,7 +48,7 @@ export async function GET(
   }
 
   try {
-    const status = getStorageStatus(trimmedHash);
+    const status = await getStorageStatus(trimmedHash);
     return NextResponse.json({
       success: true,
       data: { url: getGatewayUrl(trimmedHash), ...status },

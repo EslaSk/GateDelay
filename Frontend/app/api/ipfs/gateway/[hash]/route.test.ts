@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GET } from "./route";
-import { uploadJSON } from "@/lib/ipfsStore";
+import { uploadJSON, pinHash } from "@/lib/ipfsStore";
 
 describe("GET /api/ipfs/gateway/[hash]", () => {
   beforeEach(() => {
@@ -15,7 +15,7 @@ describe("GET /api/ipfs/gateway/[hash]", () => {
     });
   }
 
-  it("returns a public gateway URL and storage status for a known hash (happy path)", async () => {
+  it("returns a public gateway URL and storage status for a known unpinned hash", async () => {
     const hash = await uploadJSON({ title: "gateway-smoke" });
     const res = await get(hash);
 
@@ -25,7 +25,20 @@ describe("GET /api/ipfs/gateway/[hash]", () => {
     expect(body.data.url).toMatch(/^https:\/\/gateway\.pinata\.cloud\/ipfs\/Qm/);
     expect(body.data.url).not.toMatch(/localhost/);
     expect(body.data.stored).toBe(true);
+    // #1190: not pinned yet (only pinned after explicit pinHash call)
+    expect(body.data.pinned).toBe(false);
+    expect(body.data.pinStatus).toBe("none");
+  });
+
+  it("returns pinned:true after provider confirms the pin", async () => {
+    const hash = await uploadJSON({ title: "gateway-pinned" });
+    await pinHash(hash, "gateway-test-pin");
+
+    const res = await get(hash);
+    expect(res.status).toBe(200);
+    const body = await res.json();
     expect(body.data.pinned).toBe(true);
+    expect(body.data.pinStatus).toBe("pinned");
   });
 
   it("still resolves a gateway URL for an unknown hash without crashing", async () => {
@@ -74,9 +87,9 @@ describe("GET /api/ipfs/gateway/[hash]", () => {
 
   it("surfaces an unexpected runtime fault as INTERNAL_ERROR instead of a blank screen", async () => {
     const ipfsStore = await import("@/lib/ipfsStore");
-    const spy = vi.spyOn(ipfsStore, "getStorageStatus").mockImplementation(() => {
-      throw new Error("unexpected storage failure");
-    });
+    const spy = vi
+      .spyOn(ipfsStore, "getStorageStatus")
+      .mockRejectedValue(new Error("unexpected storage failure"));
 
     const res = await get("QmValidHash12345678901234567890123456789012345678901234");
 

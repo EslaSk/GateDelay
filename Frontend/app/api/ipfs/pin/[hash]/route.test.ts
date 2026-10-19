@@ -1,26 +1,41 @@
+/**
+ * Tests for POST /api/ipfs/pin/[hash]
+ *
+ * Covers:
+ *  existing – happy path, VALIDATION_ERROR, NOT_FOUND, INTERNAL_ERROR
+ *  #1190 – provider-confirmed pinStatus in response; no false 'pinned' state
+ */
 import { describe, expect, it, vi } from "vitest";
 import { POST } from "./route";
 import { uploadJSON } from "@/lib/ipfsStore";
 
-describe("POST /api/ipfs/pin/[hash]", () => {
-  function pin(hash: string, body?: unknown, rawBody?: string) {
-    const init: RequestInit = { method: "POST" };
-    if (rawBody !== undefined) {
-      init.headers = { "Content-Type": "application/json" };
-      init.body = rawBody;
-    } else if (body !== undefined) {
-      init.headers = { "Content-Type": "application/json" };
-      init.body = JSON.stringify(body);
-    }
-    return POST(new Request(`http://localhost/api/ipfs/pin/${hash}`, init), {
-      params: Promise.resolve({ hash }),
-    });
-  }
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
+function pin(hash: string, body?: unknown, rawBody?: string) {
+  const init: RequestInit = { method: "POST" };
+  if (rawBody !== undefined) {
+    init.headers = { "Content-Type": "application/json" };
+    init.body = rawBody;
+  } else if (body !== undefined) {
+    init.headers = { "Content-Type": "application/json" };
+    init.body = JSON.stringify(body);
+  }
+  return POST(new Request(`http://localhost/api/ipfs/pin/${hash}`, init), {
+    params: Promise.resolve({ hash }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Existing behaviour
+// ---------------------------------------------------------------------------
+
+describe("POST /api/ipfs/pin/[hash] – existing behaviour", () => {
   it("pins an uploaded hash and returns success (happy path)", async () => {
     const hash = await uploadJSON(
       { title: "GateDelay pin smoke" },
-      { name: "pin-smoke" },
+      { name: "pin-smoke" }
     );
 
     const res = await pin(hash, { name: "GateDelay-Market-Pin" });
@@ -29,7 +44,7 @@ describe("POST /api/ipfs/pin/[hash]", () => {
     const body = await res.json();
     expect(body.success).toBe(true);
     expect(body.message).toContain(hash);
-    expect(body.data).toEqual({ hash, pinned: true });
+    expect(body.data).toMatchObject({ hash, pinned: true });
   });
 
   it("pins without a body because name is optional", async () => {
@@ -45,7 +60,6 @@ describe("POST /api/ipfs/pin/[hash]", () => {
 
   it("rejects a missing hash with VALIDATION_ERROR", async () => {
     const res = await pin("");
-
     expect(res.status).toBe(400);
     await expect(res.json()).resolves.toMatchObject({
       success: false,
@@ -55,7 +69,6 @@ describe("POST /api/ipfs/pin/[hash]", () => {
 
   it("rejects a malformed hash with VALIDATION_ERROR", async () => {
     const res = await pin("not a valid hash!");
-
     expect(res.status).toBe(400);
     await expect(res.json()).resolves.toMatchObject({
       success: false,
@@ -92,10 +105,7 @@ describe("POST /api/ipfs/pin/[hash]", () => {
 
     expect(res.status).toBe(404);
     const body = await res.json();
-    expect(body).toMatchObject({
-      success: false,
-      code: "NOT_FOUND",
-    });
+    expect(body).toMatchObject({ success: false, code: "NOT_FOUND" });
     expect(body.error).toMatch(/upload-json/i);
   });
 
@@ -103,7 +113,7 @@ describe("POST /api/ipfs/pin/[hash]", () => {
     const hash = await uploadJSON({ title: "fault" });
     const ipfsStore = await import("@/lib/ipfsStore");
     const spy = vi.spyOn(ipfsStore, "pinHash").mockRejectedValue(
-      new Error("unexpected pin failure"),
+      new Error("unexpected pin failure")
     );
 
     const res = await pin(hash, { name: "fault" });
@@ -116,5 +126,62 @@ describe("POST /api/ipfs/pin/[hash]", () => {
     });
 
     spy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1190 – Provider-confirmed pin status
+// ---------------------------------------------------------------------------
+
+describe("#1190 – Provider-confirmed pin status in pin route", () => {
+  it("response includes pinStatus: 'pinned' on success", async () => {
+    const hash = await uploadJSON({ lifecycle: "confirmed" });
+    const res = await pin(hash, { name: "confirm-test" });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.pinStatus).toBe("pinned");
+    expect(body.data.pinned).toBe(true);
+  });
+
+  it("provider failure yields 502 PIN_FAILED with status details", async () => {
+    const hash = await uploadJSON({ lifecycle: "fail" });
+    const ipfsStore = await import("@/lib/ipfsStore");
+
+    // Simulate a provider rejection (pinHash returns false, not throws)
+    const spy = vi.spyOn(ipfsStore, "pinHash").mockResolvedValue(false);
+
+    const res = await pin(hash, { name: "will-fail" });
+
+    expect(res.status).toBe(502);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.code).toBe("PIN_FAILED");
+    expect(body.data.pinned).toBe(false);
+
+    spy.mockRestore();
+  });
+
+  it("pinned is false when upload is fresh (before any pinHash call)", async () => {
+    const hash = await uploadJSON({ notYetPinned: true });
+    const ipfsStore = await import("@/lib/ipfsStore");
+    const status = await ipfsStore.getStorageStatus(hash);
+    expect(status.pinned).toBe(false);
+    expect(status.pinStatus).toBe("none");
+  });
+
+  it("pinned transitions to true only after provider confirms", async () => {
+    const hash = await uploadJSON({ willBeConfirmed: true });
+
+    // Before pinning
+    const ipfsStore = await import("@/lib/ipfsStore");
+    let status = await ipfsStore.getStorageStatus(hash);
+    expect(status.pinned).toBe(false);
+
+    // After pinning
+    await pin(hash);
+    status = await ipfsStore.getStorageStatus(hash);
+    expect(status.pinned).toBe(true);
+    expect(status.pinStatus).toBe("pinned");
   });
 });

@@ -44,6 +44,14 @@ export const envValidationSchema = Joi.object({
   SMTP_PASS: Joi.string().required(),
   EMAIL_FROM: Joi.string().email().required(),
 
+  // BE-004: Social login provider configuration
+  SOCIAL_LOGIN_PROVIDERS: Joi.string().default('').allow('')
+    .messages({
+      'string.base': 'SOCIAL_LOGIN_PROVIDERS must be a comma-separated list (e.g., "google,twitter")',
+    }),
+  GOOGLE_OAUTH_CLIENT_ID: Joi.string().optional(),
+  TWITTER_OAUTH_CLIENT_ID: Joi.string().optional(),
+
   AVIATION_STACK_API_KEY: Joi.string().required(),
 
   BLOCKCHAIN_RPC_URL: Joi.string().uri().required()

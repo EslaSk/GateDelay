@@ -20,16 +20,14 @@ export class ConnectWalletDto {
   @IsNotEmpty()
   message: string;
 
-  /** Unique nonce to prevent replay attacks */
+  /** Unique nonce to prevent replay attacks - REQUIRED */
   @IsString()
   @IsNotEmpty()
-  @IsOptional()
-  nonce?: string;
+  nonce: string;
 
-  /** Unix timestamp in milliseconds when the request was signed */
+  /** Unix timestamp in milliseconds when the request was signed - REQUIRED */
   @IsNumber()
-  @IsOptional()
-  timestamp?: number;
+  timestamp: number;
 }
 
 export class WalletQueryDto {

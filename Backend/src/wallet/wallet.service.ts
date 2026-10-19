@@ -54,22 +54,26 @@ export class WalletService {
   ): Promise<WalletEntry> {
     const checksummed = this.validateAddress(dto.address);
 
-    if (dto.nonce && dto.timestamp) {
-      const result = await this.replayProtection.verifyRequest({
-        nonce: dto.nonce,
-        timestamp: dto.timestamp,
-        signature: dto.signature,
-        signer: checksummed,
-        payload: { address: checksummed, message: dto.message },
-      });
+    // SECURITY: Require replay protection in production
+    // Challenge (nonce + timestamp) is mandatory
+    if (!dto.nonce || !dto.timestamp) {
+      throw new BadRequestException(
+        'Wallet connection requires nonce and timestamp for replay protection',
+      );
+    }
 
-      if (!result.valid) {
-        throw new BadRequestException(
-          `Replay protection failed: ${result.error}`,
-        );
-      }
-    } else {
-      this.verifySignature(checksummed, dto.message, dto.signature);
+    const result = await this.replayProtection.verifyRequest({
+      nonce: dto.nonce,
+      timestamp: dto.timestamp,
+      signature: dto.signature,
+      signer: checksummed,
+      payload: { address: checksummed, message: dto.message },
+    });
+
+    if (!result.valid) {
+      throw new BadRequestException(
+        `Replay protection failed: ${result.error}`,
+      );
     }
 
     if (this.walletRegistry.has(checksummed)) {
@@ -165,6 +169,10 @@ export class WalletService {
   }
 
   // ─── Private helpers ────────────────────────────────────────────────────────
+
+  generateChallenge(): string {
+    return this.replayProtection.generateNonce();
+  }
 
   private validateAddress(raw: string): string {
     try {
