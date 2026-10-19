@@ -29,6 +29,39 @@ interface TradeHistoryResponse {
   totalPages: number;
 }
 
+// Validation utility for trade history response
+const validateTradeHistoryResponse = (data: any): TradeHistoryResponse => {
+  // Validate envelope structure
+  if (!data || typeof data !== 'object') {
+    throw new Error('Response validation failed: Invalid response format - expected object');
+  }
+
+  if (!data.data || typeof data.data !== 'object') {
+    throw new Error('Response validation failed: Missing or invalid data envelope');
+  }
+
+  const payload = data.data;
+
+  // Validate required fields exist
+  if (!Array.isArray(payload.trades)) {
+    throw new Error('Response validation failed: trades must be an array');
+  }
+
+  if (typeof payload.total !== 'number' || payload.total < 0) {
+    throw new Error('Response validation failed: total must be a non-negative number');
+  }
+
+  if (typeof payload.page !== 'number' || payload.page < 1) {
+    throw new Error('Response validation failed: page must be a positive number');
+  }
+
+  if (typeof payload.totalPages !== 'number' || payload.totalPages < 0) {
+    throw new Error('Response validation failed: totalPages must be a non-negative number');
+  }
+
+  return payload;
+};
+
 const fetchTradeHistory = async (
   pair: string,
   page: number,
@@ -57,7 +90,9 @@ const fetchTradeHistory = async (
     throw new Error("Failed to fetch trade history");
   }
   const data = await response.json();
-  return data.data;
+  
+  // Validate response before returning
+  return validateTradeHistoryResponse(data);
 };
 
 export default function TradePagination({
