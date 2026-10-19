@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useId } from "react";
 
 interface FlightSuggestion {
   flight_number: string;
@@ -42,6 +42,34 @@ function getErrorMessage(type: ErrorType): string {
   }
 }
 
+/**
+ * #1186 — runtime-validate a single flight record from the AviationStack
+ * response.  Returns null for records that are missing the minimum fields
+ * needed to render a useful suggestion.
+ */
+function parseFlightRecord(f: unknown): FlightSuggestion | null {
+  if (f === null || typeof f !== "object") return null;
+  const rec = f as Record<string, unknown>;
+
+  const flight = rec.flight as Record<string, unknown> | null | undefined;
+  const airline = rec.airline as Record<string, unknown> | null | undefined;
+  const dep = rec.departure as Record<string, unknown> | null | undefined;
+  const arr = rec.arrival as Record<string, unknown> | null | undefined;
+
+  const flight_number =
+    typeof flight?.iata === "string" ? flight.iata.trim() : "";
+
+  // Require at least a non-empty flight identifier — discard otherwise.
+  if (!flight_number) return null;
+
+  return {
+    flight_number,
+    airline: typeof airline?.name === "string" ? airline.name : "",
+    departure: typeof dep?.iata === "string" ? dep.iata : "",
+    arrival: typeof arr?.iata === "string" ? arr.iata : "",
+  };
+}
+
 export default function FlightSearchAutocomplete({ onSelect, placeholder = "Search flights…" }: Props) {
   const [query, setQuery] = useState("");
   const [suggestions, setSuggestions] = useState<FlightSuggestion[]>([]);
@@ -50,7 +78,17 @@ export default function FlightSearchAutocomplete({ onSelect, placeholder = "Sear
   const [open, setOpen] = useState(false);
   const [errorType, setErrorType] = useState<ErrorType>(null);
   const [noResults, setNoResults] = useState(false);
+
+  // #1187 — flag set when the user commits a selection; prevents the search
+  // effect from firing again on the resulting query update.
+  const selectionCommitted = useRef(false);
+
   const listRef = useRef<HTMLUListElement>(null);
+
+  // #1185 — per-instance IDs so multiple widgets on the same page don't share IDs.
+  const uid = useId();
+  const listboxId = `flight-listbox-${uid}`;
+  const getOptionId = (index: number) => `flight-option-${uid}-${index}`;
 
   const fetchSuggestions = useCallback(
     debounce(async (q: string) => {
@@ -98,27 +136,37 @@ export default function FlightSearchAutocomplete({ onSelect, placeholder = "Sear
           return;
         }
 
-        const data = await res.json();
+        const data: unknown = await res.json();
 
-        if (data.error) {
+        // #1186 — validate the response envelope before accessing nested fields.
+        if (data === null || typeof data !== "object") {
           setErrorType("provider");
           setSuggestions([]);
           setOpen(false);
           return;
         }
 
-        const results: FlightSuggestion[] = (data.data ?? []).map((f: Record<string, unknown>) => {
-          const flight = f.flight as Record<string, string>;
-          const airline = f.airline as Record<string, string>;
-          const dep = f.departure as Record<string, string>;
-          const arr = f.arrival as Record<string, string>;
-          return {
-            flight_number: flight?.iata ?? "",
-            airline: airline?.name ?? "",
-            departure: dep?.iata ?? "",
-            arrival: arr?.iata ?? "",
-          };
-        });
+        const envelope = data as Record<string, unknown>;
+
+        if (envelope.error) {
+          setErrorType("provider");
+          setSuggestions([]);
+          setOpen(false);
+          return;
+        }
+
+        // #1186 — data.data must be an array; anything else is a provider error.
+        if (!Array.isArray(envelope.data)) {
+          setErrorType("provider");
+          setSuggestions([]);
+          setOpen(false);
+          return;
+        }
+
+        // #1186 — validate and discard malformed records; keep valid ones.
+        const results: FlightSuggestion[] = (envelope.data as unknown[])
+          .map(parseFlightRecord)
+          .filter((f): f is FlightSuggestion => f !== null);
 
         setSuggestions(results);
         setNoResults(results.length === 0);
@@ -136,11 +184,25 @@ export default function FlightSearchAutocomplete({ onSelect, placeholder = "Sear
     [],
   );
 
-  useEffect(() => { fetchSuggestions(query); }, [query, fetchSuggestions]);
+  useEffect(() => {
+    // #1187 — skip the search triggered by a programmatic query update after
+    // the user selects a suggestion.  Reset the flag so the next deliberate
+    // edit will search normally.
+    if (selectionCommitted.current) {
+      selectionCommitted.current = false;
+      return;
+    }
+    fetchSuggestions(query);
+  }, [query, fetchSuggestions]);
 
   const select = (flight: FlightSuggestion) => {
+    // #1187 — mark the selection before updating the query so the effect
+    // above can skip the resulting search.
+    selectionCommitted.current = true;
     setQuery(flight.flight_number);
     setOpen(false);
+    setSuggestions([]);
+    setActiveIndex(-1);
     setErrorType(null);
     setNoResults(false);
     onSelect?.(flight);
@@ -174,11 +236,17 @@ export default function FlightSearchAutocomplete({ onSelect, placeholder = "Sear
   const showFeedback = !loading && query.length >= 2 && (errorType !== null || noResults);
   const isError = errorType !== null;
 
+  // #1185 — aria-activedescendant points at the currently highlighted option.
+  const activeDescendant =
+    open && activeIndex >= 0 ? getOptionId(activeIndex) : undefined;
+
   return (
     <div className="relative w-full space-y-1.5">
       <div className="relative">
+        {/* #1185 — role="combobox" owns the listbox; per-instance IDs prevent collisions. */}
         <input
           type="text"
+          role="combobox"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
@@ -187,7 +255,8 @@ export default function FlightSearchAutocomplete({ onSelect, placeholder = "Sear
           placeholder={placeholder}
           aria-autocomplete="list"
           aria-expanded={open}
-          aria-controls="flight-suggestions"
+          aria-controls={listboxId}
+          aria-activedescendant={activeDescendant}
           aria-invalid={isError}
           className="w-full rounded-lg px-4 py-2.5 pr-10 text-sm outline-none focus:ring-2 focus:ring-blue-500"
           style={{
@@ -234,7 +303,7 @@ export default function FlightSearchAutocomplete({ onSelect, placeholder = "Sear
 
       {open && (
         <ul
-          id="flight-suggestions"
+          id={listboxId}
           role="listbox"
           ref={listRef}
           className="absolute z-50 mt-1 w-full rounded-lg shadow-lg overflow-hidden"
@@ -243,6 +312,7 @@ export default function FlightSearchAutocomplete({ onSelect, placeholder = "Sear
           {suggestions.map((f, i) => (
             <li
               key={f.flight_number + i}
+              id={getOptionId(i)}
               role="option"
               aria-selected={i === activeIndex}
               onMouseDown={() => select(f)}

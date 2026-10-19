@@ -27,8 +27,9 @@ describe("POST /api/ipfs/upload-json", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(body.data.hash).toMatch(/^Qm/);
-    expect(body.data.url).toMatch(/^https:\/\/gateway\.pinata\.cloud\/ipfs\/Qm/);
+    // #1188 — CIDv1: base32lower, starts with "b" (not the old pseudo-Qm)
+    expect(body.data.hash).toMatch(/^b[a-z2-7]+$/);
+    expect(body.data.url).toMatch(/^https:\/\/gateway\.pinata\.cloud\/ipfs\/b[a-z2-7]/);
     expect(body.data.url).not.toMatch(/localhost/);
   });
 
