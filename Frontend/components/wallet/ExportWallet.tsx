@@ -2,24 +2,21 @@
 
 import React, { useState, useEffect } from "react";
 import { useAccount } from "wagmi";
-import { useTransactionTracker, TrackedTransaction } from "../../hooks/useTransactionTracker";
+import { useTransactionTracker } from "../../hooks/useTransactionTracker";
+import { convertWalletTransactionsToCSV } from "../../lib/walletTransactionCsv";
+import {
+  appendWalletExportHistory,
+  archiveUnscopedExportHistory,
+  ExportHistoryRecord,
+  readWalletExportHistory,
+} from "../../lib/walletExportHistory";
 import CryptoJS from "crypto-js";
 import { Download, FileJson, FileSpreadsheet, Lock, AlertCircle, CheckCircle2, History, Loader2 } from "lucide-react";
 
 type ExportFormat = "json" | "csv";
 
-interface ExportHistoryRecord {
-  id: string;
-  timestamp: string;
-  format: ExportFormat;
-  status: "success" | "failure";
-  error?: string;
-}
-
-const HISTORY_STORAGE_KEY = "gd_export_history";
-
 export default function ExportWallet() {
-  const { address, isConnected } = useAccount();
+  const { address, chainId, isConnected } = useAccount();
   const { transactions } = useTransactionTracker();
   
   const [password, setPassword] = useState("");
@@ -33,44 +30,51 @@ export default function ExportWallet() {
 
   useEffect(() => {
     setMounted(true);
+    let cancelled = false;
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
-        const stored = localStorage.getItem(HISTORY_STORAGE_KEY);
-        if (stored) {
-          setHistory(JSON.parse(stored));
-        }
+        archiveUnscopedExportHistory(localStorage);
+        queueMicrotask(() => {
+          if (!cancelled) {
+            setHistory(address && chainId
+              ? readWalletExportHistory(localStorage, address, chainId)
+              : []);
+          }
+        });
       }
     } catch (e) {
       // Ignore
     }
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [address, chainId]);
 
-  const saveHistory = (record: ExportHistoryRecord) => {
+  const saveHistory = (record: Omit<ExportHistoryRecord, "address" | "chainId">) => {
+    if (!address || !chainId) return;
     try {
-      const next = [record, ...history].slice(0, 10);
-      setHistory(next);
       if (typeof window !== 'undefined' && window.localStorage) {
-        localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(next));
+        setHistory(appendWalletExportHistory(localStorage, {
+          ...record,
+          address,
+          chainId,
+        }));
       }
     } catch (e) {
       // Ignore
     }
   };
 
-  const convertToCSV = (txs: TrackedTransaction[], userAddr: string) => {
-    const header = "Hash,Description,Timestamp,WalletAddress\n";
-    const rows = txs.map(tx => 
-      `${tx.hash},"${tx.description.replace(/"/g, '""')}",${new Date(tx.timestamp).toISOString()},${userAddr}`
-    ).join("\n");
-    return header + rows;
-  };
+  const visibleHistory = history.filter(
+    (record) => record.address.toLowerCase() === address?.toLowerCase() && record.chainId === chainId,
+  );
 
   const handleExport = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setSuccess(false);
 
-    if (!isConnected || !address) {
+    if (!isConnected || !address || !chainId) {
       setError("Wallet not connected");
       return;
     }
@@ -101,7 +105,7 @@ export default function ExportWallet() {
       if (format === "json") {
         rawData = JSON.stringify({ metadata, transactions }, null, 2);
       } else {
-        rawData = convertToCSV(transactions, address);
+        rawData = convertWalletTransactionsToCSV(transactions, address);
       }
 
       // Encrypt
@@ -263,13 +267,13 @@ export default function ExportWallet() {
         </button>
       </form>
 
-      {history.length > 0 && (
+      {visibleHistory.length > 0 && (
         <div className="mt-8 pt-6 border-t border-zinc-200 dark:border-zinc-800">
           <h3 className="text-sm font-semibold flex items-center gap-2 mb-4 text-zinc-700 dark:text-zinc-300">
             <History size={16} /> Export History
           </h3>
           <div className="space-y-2">
-            {history.map((record) => (
+            {visibleHistory.map((record) => (
               <div key={record.id} className="flex items-center justify-between p-2.5 rounded-lg bg-zinc-50 dark:bg-zinc-800/30 text-xs">
                 <div>
                   <span className="font-medium text-zinc-900 dark:text-zinc-100 uppercase mr-2">{record.format}</span>

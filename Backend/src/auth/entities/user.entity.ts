@@ -22,7 +22,9 @@ export interface User {
   name?: string;
   provider?: 'local' | 'google' | 'twitter';
   providerId?: string;
-  refreshToken?: string;
+  refreshTokenHash?: string; // Stores hashed refresh token verifier
+  refreshTokenId?: string; // Current active refresh token ID (jti)
+  usedRefreshTokenIds?: Set<string>; // Track consumed token IDs for reuse detection
   resetToken?: string;
   resetTokenExpiry?: Date;
   createdAt: Date;

@@ -15,12 +15,30 @@ interface Props {
 
 type ErrorType = "timeout" | "rate_limit" | "api_key" | "network" | "provider" | null;
 
-function debounce<T extends (...args: Parameters<T>) => void>(fn: T, ms: number) {
-  let timer: ReturnType<typeof setTimeout>;
-  return (...args: Parameters<T>) => {
+// Debounce helper with a cancel() method so the caller can prevent a queued
+// invocation from firing after unmount. (#1184)
+interface Debounced<T extends (...args: Parameters<T>) => void> {
+  (...args: Parameters<T>): void;
+  cancel(): void;
+}
+
+function debounce<T extends (...args: Parameters<T>) => void>(
+  fn: T,
+  ms: number,
+): Debounced<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const debounced = (...args: Parameters<T>) => {
     clearTimeout(timer);
     timer = setTimeout(() => fn(...args), ms);
   };
+
+  debounced.cancel = () => {
+    clearTimeout(timer);
+    timer = undefined;
+  };
+
+  return debounced as Debounced<T>;
 }
 
 const FETCH_TIMEOUT_MS = 8000;
@@ -52,6 +70,11 @@ export default function FlightSearchAutocomplete({ onSelect, placeholder = "Sear
   const [noResults, setNoResults] = useState(false);
   const listRef = useRef<HTMLUListElement>(null);
 
+  // Monotonically increasing counter used to discard stale responses. (#1183)
+  // Each new fetch increments this; the response only updates state if its
+  // captured id matches the current value when it resolves.
+  const requestIdRef = useRef(0);
+
   const fetchSuggestions = useCallback(
     debounce(async (q: string) => {
       if (q.length < 2) {
@@ -62,14 +85,9 @@ export default function FlightSearchAutocomplete({ onSelect, placeholder = "Sear
         return;
       }
 
-      const key = process.env.NEXT_PUBLIC_AVIATION_STACK_KEY;
-      if (!key) {
-        setErrorType("api_key");
-        setSuggestions([]);
-        setOpen(false);
-        setNoResults(false);
-        return;
-      }
+      // Capture and advance the request identity before any async work so
+      // stale responses from earlier queries are silently discarded. (#1183)
+      const requestId = ++requestIdRef.current;
 
       setLoading(true);
       setErrorType(null);
@@ -79,11 +97,15 @@ export default function FlightSearchAutocomplete({ onSelect, placeholder = "Sear
       const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
       try {
+        // Proxy request — API key stays on the server. (#1182)
         const res = await fetch(
-          `https://api.aviationstack.com/v1/flights?access_key=${key}&flight_iata=${encodeURIComponent(q)}&limit=5`,
+          `/api/flights/search?q=${encodeURIComponent(q)}`,
           { signal: controller.signal },
         );
         clearTimeout(timeoutId);
+
+        // If a newer request has already started, discard this response. (#1183)
+        if (requestId !== requestIdRef.current) return;
 
         if (res.status === 429) {
           setErrorType("rate_limit");
@@ -92,22 +114,22 @@ export default function FlightSearchAutocomplete({ onSelect, placeholder = "Sear
           return;
         }
         if (!res.ok) {
-          setErrorType("provider");
+          const body = await res.json().catch(() => ({})) as { code?: string };
+          if (body.code === "CONFIG_ERROR") {
+            setErrorType("api_key");
+          } else {
+            setErrorType("provider");
+          }
           setSuggestions([]);
           setOpen(false);
           return;
         }
 
-        const data = await res.json();
+        const data = await res.json() as { data?: Record<string, unknown>[] };
 
-        if (data.error) {
-          setErrorType("provider");
-          setSuggestions([]);
-          setOpen(false);
-          return;
-        }
+        if (requestId !== requestIdRef.current) return;
 
-        const results: FlightSuggestion[] = (data.data ?? []).map((f: Record<string, unknown>) => {
+        const results: FlightSuggestion[] = (data.data ?? []).map((f) => {
           const flight = f.flight as Record<string, string>;
           const airline = f.airline as Record<string, string>;
           const dep = f.departure as Record<string, string>;
@@ -126,17 +148,26 @@ export default function FlightSearchAutocomplete({ onSelect, placeholder = "Sear
         setActiveIndex(-1);
       } catch (err) {
         clearTimeout(timeoutId);
+        if (requestId !== requestIdRef.current) return;
         setErrorType((err as Error).name === "AbortError" ? "timeout" : "network");
         setSuggestions([]);
         setOpen(false);
       } finally {
-        setLoading(false);
+        // Only clear the loading spinner if this is still the active request.
+        if (requestId === requestIdRef.current) {
+          setLoading(false);
+        }
       }
     }, 350),
     [],
   );
 
-  useEffect(() => { fetchSuggestions(query); }, [query, fetchSuggestions]);
+  useEffect(() => {
+    fetchSuggestions(query);
+    // Cancel any pending debounced invocation when the component unmounts or
+    // before the next query fires, preventing post-teardown state updates. (#1184)
+    return () => fetchSuggestions.cancel();
+  }, [query, fetchSuggestions]);
 
   const select = (flight: FlightSuggestion) => {
     setQuery(flight.flight_number);
