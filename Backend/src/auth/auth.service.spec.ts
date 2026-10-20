@@ -6,6 +6,8 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'node:crypto';
+import { v4 as uuidv4 } from 'uuid';
+import type { PasswordReset } from './entities/password-reset.entity';
 import * as nodemailer from 'nodemailer';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
@@ -150,11 +152,9 @@ describe('AuthService abuse paths', () => {
       email: 'user@example.com',
       password: validPassword,
     });
+    const resetToken = 'test-reset-token';
+    (uuidv4 as jest.Mock).mockReturnValueOnce('reset-record').mockReturnValueOnce(resetToken);
     await service.forgotPassword({ email: 'user@example.com' });
-
-    const users = (service as any).users as Map<string, any>;
-    const user = [...users.values()][0];
-    const resetToken = user.resetToken;
 
     await expect(
       service.resetPassword({ token: resetToken, password: 'NewPass2' }),
@@ -169,14 +169,15 @@ describe('AuthService abuse paths', () => {
       email: 'user@example.com',
       password: validPassword,
     });
+    const resetToken = 'test-expired-reset-token';
+    (uuidv4 as jest.Mock).mockReturnValueOnce('expired-reset-record').mockReturnValueOnce(resetToken);
     await service.forgotPassword({ email: 'user@example.com' });
-
-    const users = (service as any).users as Map<string, any>;
-    const user = [...users.values()][0];
-    user.resetTokenExpiry = new Date(Date.now() - 1);
+    const resets = (service as unknown as { passwordResets: Map<string, PasswordReset> }).passwordResets;
+    const reset = [...resets.values()][0];
+    reset.expiresAt = new Date(Date.now() - 1);
 
     await expect(
-      service.resetPassword({ token: user.resetToken, password: 'NewPass2' }),
+      service.resetPassword({ token: resetToken, password: 'NewPass2' }),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 

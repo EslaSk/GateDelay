@@ -104,7 +104,9 @@ function buildService(opts: {
       ),
       lean: jest.fn().mockReturnThis(),
     })),
-    create: jest.fn().mockResolvedValue(liveDoc),
+    create: jest.fn().mockImplementation(async (fields: Record<string, unknown>) =>
+      Object.assign(liveDoc, fields),
+    ),
     find: jest.fn().mockReturnValue({
       sort: jest.fn().mockReturnThis(),
       limit: jest.fn().mockReturnThis(),
