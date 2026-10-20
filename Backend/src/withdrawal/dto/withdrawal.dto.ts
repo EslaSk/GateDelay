@@ -31,6 +31,26 @@ export class InitiateWithdrawalDto {
   amount: string;
 
   /**
+   * EIP-155 chain id.  Required for multi-sig withdrawals so that approval
+   * messages are chain-scoped and cannot be replayed on a different network.
+   * For single-owner withdrawals it defaults to 0 (no chain binding).
+   */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  chainId?: number;
+
+  /**
+   * Unix timestamp (seconds) after which approval signatures will be rejected.
+   * Required for multi-sig withdrawals so stale approvals cannot be submitted
+   * after the intent has expired.  Omit for single-owner withdrawals.
+   */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  expiry?: number;
+
+  /**
    * Optional: when provided the withdrawal will be placed under a multi-sig
    * flow with this threshold.
    */
