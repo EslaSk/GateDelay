@@ -16,14 +16,33 @@ import {
   NonceState,
   ReserveNonceResult,
 } from './models/nonce.model';
+import { resolveChain, type ChainEntry } from './chain-registry';
+
+// ── Distributed lock constants ─────────────────────────────────────────────────
+
+/**
+ * How long (ms) a lock lease lives in the cache store before it is
+ * automatically expired.  Keeps a crashed holder from blocking forever.
+ */
+const LOCK_TTL_MS = 10_000;
+
+/**
+ * How long to wait between CAS spin attempts (ms).
+ */
+const LOCK_RETRY_INTERVAL_MS = 50;
+
+/**
+ * Maximum total time (ms) to spin waiting for a lock before giving up.
+ * Callers see a ConflictException if this is exceeded.
+ */
+const LOCK_ACQUIRE_TIMEOUT_MS = 8_000;
 
 const DEFAULT_NETWORK = 'mantle';
 const DEFAULT_RESERVATION_TTL_MS = 30_000;
 
 @Injectable()
 export class NonceManagerService {
-  private readonly providerCache = new Map<string, ethers.JsonRpcProvider>();
-  private readonly mutexes = new Map<string, Promise<void>>();
+  private readonly providerCache = new Map<number, ethers.JsonRpcProvider>();
 
   constructor(
     private readonly config: ConfigService,
@@ -35,13 +54,10 @@ export class NonceManagerService {
     network = DEFAULT_NETWORK,
   ): Promise<NonceState> {
     const normalizedAddress = this.normalizeAddress(address);
-    const normalizedNetwork = this.normalizeNetwork(network);
+    const chain = resolveChain(network);
 
-    return this.withLock(normalizedNetwork, normalizedAddress, async () => {
-      const state = await this.getOrInitState(
-        normalizedAddress,
-        normalizedNetwork,
-      );
+    return this.withLock(chain.chainId, normalizedAddress, async () => {
+      const state = await this.getOrInitState(normalizedAddress, chain);
       await this.pruneExpiredReservations(state);
       await this.persistState(state);
       return state;
@@ -60,13 +76,10 @@ export class NonceManagerService {
     }
 
     const normalizedAddress = this.normalizeAddress(address);
-    const normalizedNetwork = this.normalizeNetwork(network);
+    const chain = resolveChain(network);
 
-    return this.withLock(normalizedNetwork, normalizedAddress, async () => {
-      const state = await this.getOrInitState(
-        normalizedAddress,
-        normalizedNetwork,
-      );
+    return this.withLock(chain.chainId, normalizedAddress, async () => {
+      const state = await this.getOrInitState(normalizedAddress, chain);
       await this.pruneExpiredReservations(state);
 
       const nonce = this.findFirstAvailableNonce(state);
@@ -86,7 +99,7 @@ export class NonceManagerService {
       await this.persistState(state);
 
       return {
-        network: normalizedNetwork,
+        network: chain.name,
         address: normalizedAddress,
         nonce,
         reservationId,
@@ -103,13 +116,10 @@ export class NonceManagerService {
     network = DEFAULT_NETWORK,
   ): Promise<NonceState> {
     const normalizedAddress = this.normalizeAddress(address);
-    const normalizedNetwork = this.normalizeNetwork(network);
+    const chain = resolveChain(network);
 
-    return this.withLock(normalizedNetwork, normalizedAddress, async () => {
-      const state = await this.getOrInitState(
-        normalizedAddress,
-        normalizedNetwork,
-      );
+    return this.withLock(chain.chainId, normalizedAddress, async () => {
+      const state = await this.getOrInitState(normalizedAddress, chain);
       await this.pruneExpiredReservations(state);
 
       const reservation = this.findReservationById(state, reservationId);
@@ -136,13 +146,10 @@ export class NonceManagerService {
     network = DEFAULT_NETWORK,
   ): Promise<NonceState> {
     const normalizedAddress = this.normalizeAddress(address);
-    const normalizedNetwork = this.normalizeNetwork(network);
+    const chain = resolveChain(network);
 
-    return this.withLock(normalizedNetwork, normalizedAddress, async () => {
-      const state = await this.getOrInitState(
-        normalizedAddress,
-        normalizedNetwork,
-      );
+    return this.withLock(chain.chainId, normalizedAddress, async () => {
+      const state = await this.getOrInitState(normalizedAddress, chain);
       await this.pruneExpiredReservations(state);
 
       const reservation = this.findReservationById(state, reservationId);
@@ -163,16 +170,13 @@ export class NonceManagerService {
     network = DEFAULT_NETWORK,
   ): Promise<NonceState> {
     const normalizedAddress = this.normalizeAddress(address);
-    const normalizedNetwork = this.normalizeNetwork(network);
+    const chain = resolveChain(network);
 
-    return this.withLock(normalizedNetwork, normalizedAddress, async () => {
-      const state = await this.getOrInitState(
-        normalizedAddress,
-        normalizedNetwork,
-      );
+    return this.withLock(chain.chainId, normalizedAddress, async () => {
+      const state = await this.getOrInitState(normalizedAddress, chain);
       await this.pruneExpiredReservations(state);
 
-      const provider = this.getProvider(normalizedNetwork);
+      const provider = this.getProvider(chain);
       const chainNonce = await provider.getTransactionCount(
         normalizedAddress,
         'pending',
@@ -199,13 +203,10 @@ export class NonceManagerService {
     ttlMs = DEFAULT_RESERVATION_TTL_MS,
   ): Promise<GapFillResult> {
     const normalizedAddress = this.normalizeAddress(address);
-    const normalizedNetwork = this.normalizeNetwork(network);
+    const chain = resolveChain(network);
 
-    return this.withLock(normalizedNetwork, normalizedAddress, async () => {
-      const state = await this.getOrInitState(
-        normalizedAddress,
-        normalizedNetwork,
-      );
+    return this.withLock(chain.chainId, normalizedAddress, async () => {
+      const state = await this.getOrInitState(normalizedAddress, chain);
       await this.pruneExpiredReservations(state);
 
       const gapsBeforeReservation = this.detectGaps(state);
@@ -241,7 +242,7 @@ export class NonceManagerService {
         state.updatedAt = new Date().toISOString();
 
         reserved = {
-          network: normalizedNetwork,
+          network: chain.name,
           address: normalizedAddress,
           nonce,
           reservationId,
@@ -254,7 +255,7 @@ export class NonceManagerService {
       await this.persistState(state);
 
       return {
-        network: normalizedNetwork,
+        network: chain.name,
         address: normalizedAddress,
         chainNonce: state.chainNonce,
         nextNonce: state.nextNonce,
@@ -264,6 +265,8 @@ export class NonceManagerService {
     });
   }
 
+  // ── Private helpers ────────────────────────────────────────────────────────
+
   private normalizeAddress(address: string): string {
     try {
       return ethers.getAddress(address);
@@ -272,33 +275,43 @@ export class NonceManagerService {
     }
   }
 
-  private normalizeNetwork(network: string): string {
-    return (network || DEFAULT_NETWORK).trim().toLowerCase();
+  /**
+   * Cache key is scoped to verified chainId + checksummed address so that
+   * aliases for the same real chain share a single reservation namespace.
+   */
+  private cacheKey(chainId: number, address: string): string {
+    return `nonce:state:${chainId}:${address}`;
   }
 
-  private cacheKey(network: string, address: string): string {
-    return `nonce:state:${network}:${address}`;
+  /**
+   * Lock key mirrors the state key so the distributed mutex covers the same
+   * scope as the data it protects.
+   */
+  private lockKey(chainId: number, address: string): string {
+    return `nonce:lock:${chainId}:${address}`;
   }
 
   private async getOrInitState(
     address: string,
-    network: string,
+    chain: ChainEntry,
   ): Promise<NonceState> {
-    const key = this.cacheKey(network, address);
+    const key = this.cacheKey(chain.chainId, address);
     const cached = await this.cache.get<NonceState>(key);
     if (cached) {
       return {
         ...cached,
+        // Normalise to canonical name in case an alias was used.
+        network: chain.name,
         usedNonces: [...(cached.usedNonces ?? [])],
         reservations: { ...(cached.reservations ?? {}) },
       };
     }
 
-    const provider = this.getProvider(network);
+    const provider = this.getProvider(chain);
     const chainNonce = await provider.getTransactionCount(address, 'pending');
 
     const initialized: NonceState = {
-      network,
+      network: chain.name,
       address,
       chainNonce,
       nextNonce: chainNonce,
@@ -307,12 +320,22 @@ export class NonceManagerService {
       updatedAt: new Date().toISOString(),
     };
 
-    await this.persistState(initialized);
+    await this.persistState(initialized, chain.chainId);
     return initialized;
   }
 
-  private async persistState(state: NonceState): Promise<void> {
-    await this.cache.set(this.cacheKey(state.network, state.address), state);
+  private async persistState(
+    state: NonceState,
+    chainId?: number,
+  ): Promise<void> {
+    // chainId may be passed explicitly when the state has not yet been stored
+    // (first init) and chain.chainId is not yet encoded in state.
+    const resolvedChainId =
+      chainId ?? resolveChain(state.network).chainId;
+    await this.cache.set(
+      this.cacheKey(resolvedChainId, state.address),
+      state,
+    );
   }
 
   private async pruneExpiredReservations(state: NonceState): Promise<void> {
@@ -328,15 +351,13 @@ export class NonceManagerService {
   private findFirstAvailableNonce(state: NonceState): number {
     const used = new Set(state.usedNonces);
     const reserved = new Set(
-      Object.values(state.reservations).map((reservation) => reservation.nonce),
+      Object.values(state.reservations).map((r) => r.nonce),
     );
 
     let candidate = Math.max(state.chainNonce, state.nextNonce);
-
     while (used.has(candidate) || reserved.has(candidate)) {
       candidate += 1;
     }
-
     return candidate;
   }
 
@@ -345,20 +366,20 @@ export class NonceManagerService {
     reservationId: string,
   ): NonceReservation | undefined {
     return Object.values(state.reservations).find(
-      (reservation) => reservation.reservationId === reservationId,
+      (r) => r.reservationId === reservationId,
     );
   }
 
   private detectGaps(state: NonceState): number[] {
     const used = new Set(state.usedNonces);
     const reserved = new Set(
-      Object.values(state.reservations).map((reservation) => reservation.nonce),
+      Object.values(state.reservations).map((r) => r.nonce),
     );
 
     const maxUsed =
       state.usedNonces.length > 0 ? Math.max(...state.usedNonces) : -1;
     const maxReserved =
-      reserved.size > 0 ? Math.max(...Array.from(reserved.values())) : -1;
+      reserved.size > 0 ? Math.max(...Array.from(reserved)) : -1;
     const highestKnown = Math.max(
       state.nextNonce,
       maxUsed + 1,
@@ -371,51 +392,80 @@ export class NonceManagerService {
         gaps.push(nonce);
       }
     }
-
     return gaps;
   }
 
-  private getProvider(network: string): ethers.JsonRpcProvider {
-    const normalizedNetwork = this.normalizeNetwork(network);
-    const cached = this.providerCache.get(normalizedNetwork);
+  private getProvider(chain: ChainEntry): ethers.JsonRpcProvider {
+    const cached = this.providerCache.get(chain.chainId);
     if (cached) return cached;
 
-    const networkConfigKey = `BLOCKCHAIN_RPC_URL_${normalizedNetwork.toUpperCase()}`;
-    const fallbackRpc = this.config.get<string>(
-      'BLOCKCHAIN_RPC_URL',
-      'https://rpc.mantle.xyz',
-    );
-    const rpcUrl = this.config.get<string>(networkConfigKey, fallbackRpc);
+    // Allow runtime env-var override (BLOCKCHAIN_RPC_URL_<NAME_UPPER>).
+    const envKey = `BLOCKCHAIN_RPC_URL_${chain.name.replace(/-/g, '_').toUpperCase()}`;
+    const rpcUrl =
+      this.config.get<string>(envKey) ??
+      this.config.get<string>('BLOCKCHAIN_RPC_URL') ??
+      chain.rpcUrl;
 
     const provider = new ethers.JsonRpcProvider(rpcUrl);
-    this.providerCache.set(normalizedNetwork, provider);
+    this.providerCache.set(chain.chainId, provider);
     return provider;
   }
 
+  // ── Distributed compare-and-set lock ──────────────────────────────────────
+  //
+  // Strategy:
+  //   • Acquisition: spin-loop, each attempt reads the lock key from the shared
+  //     cache (Redis in production).  If absent, write our token with a TTL
+  //     (LOCK_TTL_MS) and immediately re-read to confirm we won the race.
+  //     This two-step SET-then-GET is the simplest CAS pattern available
+  //     without Lua scripts.  If our token is confirmed, we hold the lock.
+  //   • Release: delete the key only when it still contains our token —
+  //     prevents a late holder from evicting a newer owner.
+  //   • Safety: the TTL bounds lease duration, so a crashed holder never
+  //     blocks permanently.  Concurrent reservations for different (chainId,
+  //     address) pairs use independent keys and never contend.
+
   private async withLock<T>(
-    network: string,
+    chainId: number,
     address: string,
     task: () => Promise<T>,
   ): Promise<T> {
-    const lockKey = `${network}:${address}`;
-    const previous = this.mutexes.get(lockKey) ?? Promise.resolve();
+    const key = this.lockKey(chainId, address);
+    const token = randomUUID();
+    const deadline = Date.now() + LOCK_ACQUIRE_TIMEOUT_MS;
 
-    let release: () => void = () => undefined;
-    const current = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+    // ── Acquire ────────────────────────────────────────────────────────────
+    while (true) {
+      const existing = await this.cache.get<string>(key);
 
-    const lockToken = previous.then(() => current);
-    this.mutexes.set(lockKey, lockToken);
+      if (!existing) {
+        // Slot appears free — attempt to claim it.
+        await this.cache.set(key, token, LOCK_TTL_MS);
+        // Re-read to confirm we won any concurrent SET race.
+        const confirmed = await this.cache.get<string>(key);
+        if (confirmed === token) break; // lock acquired
+      }
 
-    await previous;
+      if (Date.now() >= deadline) {
+        throw new ConflictException(
+          `Could not acquire nonce lock for chainId=${chainId} address=${address} ` +
+            `after ${LOCK_ACQUIRE_TIMEOUT_MS} ms. Try again shortly.`,
+        );
+      }
 
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, LOCK_RETRY_INTERVAL_MS),
+      );
+    }
+
+    // ── Execute task ───────────────────────────────────────────────────────
     try {
       return await task();
     } finally {
-      release();
-      if (this.mutexes.get(lockKey) === lockToken) {
-        this.mutexes.delete(lockKey);
+      // ── Release: only remove the key if it still holds our token ─────────
+      const current = await this.cache.get<string>(key);
+      if (current === token) {
+        await this.cache.del(key);
       }
     }
   }

@@ -1,7 +1,7 @@
 export interface Session {
   id: string;
   userId: string;
-  refreshToken: string;
+  refreshTokenHash: string;
   deviceInfo?: string;
   ipAddress?: string;
   userAgent?: string;

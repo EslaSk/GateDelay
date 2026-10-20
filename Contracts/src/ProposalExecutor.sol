@@ -58,6 +58,16 @@ contract ProposalExecutor {
     }
 
     // -------------------------------------------------------------------------
+    // Internal helpers
+    // -------------------------------------------------------------------------
+    /// @notice Revert with the provided return data, preserving the original revert reason.
+    function _revertWithReason(bytes memory returndata) internal pure {
+        assembly ("memory-safe") {
+            revert(add(returndata, 0x20), mload(returndata))
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // External functions
     // -------------------------------------------------------------------------
 
@@ -82,18 +92,25 @@ contract ProposalExecutor {
 
         proposalId = proposalCount++;
 
-        proposals[proposalId] = Proposal({
-            id: proposalId,
-            proposer: msg.sender,
-            actions: actions,
-            targets: targets,
-            values: values,
-            description: description,
-            approvalCount: 0,
-            executedAt: 0,
-            status: ProposalStatus.PENDING,
-            timelockUntil: block.timestamp + timelockDelay
-        });
+        Proposal storage proposal = proposals[proposalId];
+        proposal.id = proposalId;
+        proposal.proposer = msg.sender;
+        proposal.description = description;
+        proposal.approvalCount = 0;
+        proposal.executedAt = 0;
+        proposal.status = ProposalStatus.PENDING;
+        proposal.timelockUntil = block.timestamp + timelockDelay;
+
+        // Copy calldata arrays to storage
+        proposal.targets = new address[](targets.length);
+        proposal.values = new uint256[](values.length);
+        proposal.actions = new bytes[](actions.length);
+        
+        for (uint256 i = 0; i < targets.length; i++) {
+            proposal.targets[i] = targets[i];
+            proposal.values[i] = values[i];
+            proposal.actions[i] = actions[i];
+        }
 
         emit ProposalCreated(proposalId, msg.sender, description);
     }
@@ -121,8 +138,7 @@ contract ProposalExecutor {
     /// @dev Reverts: `ProposalNotFound` if `proposalId >= proposalCount` is true.
     ///     `ProposalNotApproved` if `proposal.status != ProposalStatus.APPROVED` is true.
     ///     `ProposalAlreadyExecuted` if `proposal.executedAt != 0` is true. `TimelockNotReady` if
-    ///     `block.timestamp < proposal.timelockUntil` is true. `ExecutionFailed` if `!success` is
-    ///     true.
+    ///     `block.timestamp < proposal.timelockUntil` is true. Preserves target revert reason if execution fails.
     function executeProposal(uint256 proposalId) external {
         if (proposalId >= proposalCount) revert ProposalNotFound();
 
@@ -135,14 +151,14 @@ contract ProposalExecutor {
         proposal.status = ProposalStatus.EXECUTED;
         proposal.executedAt = block.timestamp;
 
-        // Execute all actions
+        // Execute all actions with revert data preservation
         for (uint256 i = 0; i < proposal.targets.length; i++) {
-            (bool success,) = proposal.targets[i].call{value: proposal.values[i]}(proposal.actions[i]);
+            (bool success, bytes memory returndata) = proposal.targets[i].call{value: proposal.values[i]}(proposal.actions[i]);
 
             if (!success) {
                 proposal.status = ProposalStatus.FAILED;
                 emit ProposalExecutionFailed(proposalId, "Action execution failed");
-                revert ExecutionFailed();
+                _revertWithReason(returndata);
             }
         }
 

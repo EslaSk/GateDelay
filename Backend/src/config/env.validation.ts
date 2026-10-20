@@ -107,6 +107,10 @@ export const envValidationSchema = Joi.object({
     }),
   WEBHOOK_SECRET_ROTATION: Joi.string().optional(),
   WEBHOOK_TIMESTAMP_WINDOW_MS: Joi.number().integer().positive().optional(),
+  WEBHOOK_MAX_ATTEMPTS: Joi.number().integer().min(1).max(20).default(5),
+  WEBHOOK_RETRY_BASE_MS: Joi.number().integer().positive().default(2000),
+  WEBHOOK_RETRY_FACTOR: Joi.number().min(1).default(2),
+  WEBHOOK_RETRY_CAP_MS: Joi.number().integer().positive().default(60000),
 
   PINATA_API_KEY: Joi.string().optional(),
   PINATA_SECRET_API_KEY: Joi.string().optional(),

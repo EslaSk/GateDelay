@@ -140,6 +140,6 @@ contract ConstructorValidationTest is Test {
     function test_multiSig_revertsOnEmptySigners() public {
         address[] memory signers = new address[](0);
         vm.expectRevert(MultiSigWallet.InvalidSignerCount.selector);
-        new MultiSigWallet(signers, 1);
+        new MultiSigWallet(signers, 1, 1);
     }
 }

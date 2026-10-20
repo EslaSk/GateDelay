@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useId } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   ChevronLeft,
@@ -33,6 +33,32 @@ interface TradeHistoryResponse {
   total: number;
   page: number;
   totalPages: number;
+}
+
+function validateTradeHistoryResponse(data: unknown): TradeHistoryResponse {
+  if (!data || typeof data !== "object") {
+    throw new Error("Invalid trade history response");
+  }
+  const response = data as Record<string, unknown>;
+  if (
+    !Array.isArray(response.trades) ||
+    !response.trades.every((trade: unknown) => {
+      if (!trade || typeof trade !== "object") return false;
+      const row = trade as Record<string, unknown>;
+      return ["id", "pair", "price", "amount", "timestamp"].every(
+        (key) => typeof row[key] === "string"
+      ) && (row.side === "BUY" || row.side === "SELL") &&
+        (row.orderId === undefined || typeof row.orderId === "string") &&
+        (row.userId === undefined || typeof row.userId === "string");
+    }) ||
+    !["total", "page", "totalPages"].every(
+      (key) => typeof response[key] === "number" && Number.isSafeInteger(response[key]) &&
+        (response[key] as number) >= (key === "page" ? 1 : 0)
+    )
+  ) {
+    throw new Error("Invalid trade history response");
+  }
+  return response as unknown as TradeHistoryResponse;
 }
 
 /**
@@ -72,7 +98,9 @@ const fetchTradeHistory = async (
     throw new Error("Failed to fetch trade history");
   }
   const data = await response.json();
-  return data.data;
+  
+  // Validate response before returning
+  return validateTradeHistoryResponse(data);
 };
 
 export default function TradePagination({
@@ -80,6 +108,7 @@ export default function TradePagination({
   pageSize = 20,
   showFilters = true,
 }: TradePaginationProps) {
+  const startDateId = useId();
   const [page, setPage] = useState(1);
 
   /**
@@ -232,10 +261,11 @@ export default function TradePagination({
       {showFilters && (
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1">
-            <label className="text-xs" style={{ color: "var(--muted)" }}>
+            <label htmlFor={startDateId} className="text-xs" style={{ color: "var(--muted)" }}>
               Start Date
             </label>
             <input
+              id={startDateId}
               type="date"
               value={startDate}
               onChange={(e) => {
