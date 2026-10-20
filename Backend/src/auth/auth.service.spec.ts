@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { randomUUID } from 'node:crypto';
 import * as nodemailer from 'nodemailer';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
@@ -14,7 +15,7 @@ jest.mock('nodemailer', () => ({
 }));
 
 jest.mock('uuid', () => ({
-  v4: jest.fn(() => require('crypto').randomUUID()),
+  v4: jest.fn(() => randomUUID()),
 }));
 
 describe('AuthService abuse paths', () => {

@@ -703,7 +703,7 @@ export class WithdrawalService {
         amount: record.amount,
         expiry: record.expiry,
       },
-      KEY_ORDER,
+      [...KEY_ORDER],
     );
 
     try {
@@ -774,7 +774,7 @@ export class WithdrawalService {
       expiry: record.expiry,
     };
 
-    const message = JSON.stringify(fields, KEY_ORDER);
+    const message = JSON.stringify(fields, [...KEY_ORDER]);
 
     return { fields, message };
   }
