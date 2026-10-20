@@ -42,9 +42,16 @@ interface IERC1155Receiver {
 
 /// @title PositionToken
 /// @notice ERC1155 token tracking YES/NO positions across all prediction markets.
-///         Position IDs encode market address + outcome:
-///           YES id = (uint256(uint160(market)) << 1) | 1
-///           NO  id = (uint256(uint160(market)) << 1) | 2
+///         Position IDs encode market address + outcome using two reserved low bits:
+///           YES id = (uint256(uint160(market)) << 2) | 0
+///           NO  id = (uint256(uint160(market)) << 2) | 1
+///         The outcome occupies the two lowest bits, so the market address is shifted
+///         clear of the outcome encoding and distinct market/outcome pairs always map
+///         to distinct ids (e.g. markets 2 and 3 no longer collide on NO).
+/// @dev Compatibility: this is a breaking change to the id encoding. Ids minted under
+///      the previous `(market << 1) | {1,2}` scheme are not valid under the new scheme
+///      and must be migrated (burn old ids / re-mint under the new encoding) or handled
+///      via a versioned encoding before upgrading a live deployment.
 contract PositionToken {
     // -------------------------------------------------------------------------
     // Custom errors
@@ -103,20 +110,20 @@ contract PositionToken {
     // -------------------------------------------------------------------------
     // Position ID helpers
     // -------------------------------------------------------------------------
-    /// @notice Executes yesId.
+    /// @notice Computes the YES position token id for a market.
     /// @param market Market address associated with this operation.
     /// @return Value produced by the operation.
     /// @dev Access: No caller-specific access restriction is imposed.
     function yesId(address market) public pure returns (uint256) {
-        return (uint256(uint160(market)) << 1) | 1;
+        return (uint256(uint160(market)) << 2) | 0;
     }
 
-    /// @notice Executes noId.
+    /// @notice Computes the NO position token id for a market.
     /// @param market Market address associated with this operation.
     /// @return Value produced by the operation.
     /// @dev Access: No caller-specific access restriction is imposed.
     function noId(address market) public pure returns (uint256) {
-        return (uint256(uint160(market)) << 1) | 2;
+        return (uint256(uint160(market)) << 2) | 1;
     }
 
     // -------------------------------------------------------------------------
