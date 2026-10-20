@@ -9,7 +9,10 @@ import {
   ArrayMaxSize,
   IsInt,
   Min,
+  Max,
+  IsIn,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class InitiateWithdrawalDto {
   @IsEthereumAddress()
@@ -63,8 +66,37 @@ export class MultiSigSignatureDto {
   signature: string;
 }
 
+const VALID_STATUSES = [
+  'pending',
+  'submitted',
+  'confirmed',
+  'failed',
+  'cancelled',
+] as const;
+
 export class WithdrawalQueryDto {
+  /**
+   * Optional status filter. Must be one of the known WithdrawalStatus values.
+   */
   @IsOptional()
   @IsString()
+  @IsIn(VALID_STATUSES)
   status?: string;
+
+  /**
+   * Opaque cursor returned by the previous page. Encodes `createdAt|id`.
+   */
+  @IsOptional()
+  @IsString()
+  cursor?: string;
+
+  /**
+   * Maximum records to return per page (1–100, default 20).
+   */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
 }

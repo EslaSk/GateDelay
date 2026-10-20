@@ -28,6 +28,99 @@ const ERC20_TRANSFER_ABI = [
 const NATIVE_SENTINEL = 'NATIVE';
 const DEFAULT_REQUIRED_CONFIRMATIONS = 12;
 
+/**
+ * How many times trackConfirmations will retry after a recoverable provider
+ * error before giving up and leaving the record in 'submitted' state for the
+ * next manual reconciliation cycle.
+ */
+const MAX_TRACK_RETRIES = 5;
+
+/**
+ * Initial back-off in milliseconds (doubles on each retry, capped at 32 s).
+ */
+const TRACK_RETRY_BASE_MS = 2_000;
+
+// ── Provider-error classification ─────────────────────────────────────────────
+
+/**
+ * Error patterns that indicate a transient RPC / transport problem.
+ * Anything NOT in this set is treated as a terminal failure.
+ */
+const RECOVERABLE_ERROR_PATTERNS: RegExp[] = [
+  /network/i,
+  /timeout/i,
+  /ETIMEDOUT/i,
+  /ECONNREFUSED/i,
+  /ECONNRESET/i,
+  /ENOTFOUND/i,
+  /socket hang up/i,
+  /getaddrinfo/i,
+  /server error/i,
+  /rate.?limit/i,
+  /429/,
+  /503/,
+  /504/,
+  /could not detect network/i,
+  /missing response/i,
+  /underlying network changed/i,
+];
+
+function isRecoverableProviderError(err: unknown): boolean {
+  const message =
+    err instanceof Error
+      ? err.message
+      : typeof err === 'string'
+        ? err
+        : String(err);
+  return RECOVERABLE_ERROR_PATTERNS.some((re) => re.test(message));
+}
+
+function backoffMs(attempt: number): number {
+  return Math.min(TRACK_RETRY_BASE_MS * 2 ** attempt, 32_000);
+}
+
+// ── Pagination helpers ─────────────────────────────────────────────────────────
+
+/**
+ * A cursor encodes `${createdAt.toISOString()}|${id}` as a base-64 string so
+ * it is opaque to callers and safe to pass through query strings.
+ */
+function encodeCursor(record: WithdrawalRecord): string {
+  return Buffer.from(
+    `${record.createdAt.toISOString()}|${record.id}`,
+    'utf8',
+  ).toString('base64url');
+}
+
+function decodeCursor(cursor: string): { ts: number; id: string } | null {
+  try {
+    const raw = Buffer.from(cursor, 'base64url').toString('utf8');
+    const pipe = raw.lastIndexOf('|');
+    if (pipe === -1) return null;
+    const ts = Date.parse(raw.slice(0, pipe));
+    if (Number.isNaN(ts)) return null;
+    return { ts, id: raw.slice(pipe + 1) };
+  } catch {
+    return null;
+  }
+}
+
+/** Stable sort key: earlier timestamp sorts first; ties broken by id (lexicographic). */
+function compareAsc(a: WithdrawalRecord, b: WithdrawalRecord): number {
+  const timeDiff = a.createdAt.getTime() - b.createdAt.getTime();
+  return timeDiff !== 0 ? timeDiff : a.id.localeCompare(b.id);
+}
+
+// ── Page response type ─────────────────────────────────────────────────────────
+
+export interface WithdrawalPage {
+  data: WithdrawalRecord[];
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
+// ── Service ────────────────────────────────────────────────────────────────────
+
 @Injectable()
 export class WithdrawalService {
   private readonly logger = new Logger(WithdrawalService.name);
@@ -201,23 +294,66 @@ export class WithdrawalService {
     return record;
   }
 
-  /** List all withdrawals for the authenticated user, optionally filtered by status. */
-  listWithdrawals(
-    userId: string,
-    query: WithdrawalQueryDto,
-  ): WithdrawalRecord[] {
-    let results = [...this.withdrawals.values()].filter(
-      (w) => w.userId === userId,
+  /**
+   * List withdrawals for the authenticated user with optional status filter
+   * and keyset (cursor) pagination ordered by (createdAt ASC, id ASC).
+   *
+   * Returns a bounded page plus an opaque `nextCursor` the client passes back
+   * to fetch the following page.  Concurrent inserts cannot displace records
+   * across page boundaries because the cursor anchors on a stable composite key.
+   */
+  listWithdrawals(userId: string, query: WithdrawalQueryDto): WithdrawalPage {
+    const limit = Math.min(Math.max(query.limit ?? 20, 1), 100);
+
+    // 1. Filter by owner and optional status (DTO has already validated the value)
+    const statusFilter = query.status
+      ? (query.status.toLowerCase() as WithdrawalStatus)
+      : undefined;
+
+    let candidates = [...this.withdrawals.values()].filter(
+      (w) =>
+        w.userId === userId &&
+        (statusFilter === undefined || w.status === statusFilter),
     );
 
-    if (query.status) {
-      const normalised = query.status.toLowerCase() as WithdrawalStatus;
-      results = results.filter((w) => w.status === normalised);
+    // 2. Sort ascending by (createdAt, id) — stable keyset order
+    candidates.sort(compareAsc);
+
+    // 3. Apply cursor: skip everything up to and including the cursor record
+    if (query.cursor) {
+      const decoded = decodeCursor(query.cursor);
+      if (!decoded) {
+        throw new BadRequestException('Invalid pagination cursor');
+      }
+      const { ts: cursorTs, id: cursorId } = decoded;
+      const idx = candidates.findIndex(
+        (w) =>
+          w.createdAt.getTime() === cursorTs && w.id === cursorId,
+      );
+      if (idx !== -1) {
+        candidates = candidates.slice(idx + 1);
+      }
+      // If not found the cursor record was removed; continue from the position
+      // that would have followed it (first record strictly after the cursor ts/id).
+      else {
+        candidates = candidates.filter(
+          (w) =>
+            w.createdAt.getTime() > cursorTs ||
+            (w.createdAt.getTime() === cursorTs &&
+              w.id.localeCompare(cursorId) > 0),
+        );
+      }
     }
 
-    return results.sort(
-      (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
-    );
+    // 4. Take one extra to detect whether another page exists
+    const slice = candidates.slice(0, limit + 1);
+    const hasMore = slice.length > limit;
+    const data = hasMore ? slice.slice(0, limit) : slice;
+
+    const nextCursor =
+      hasMore && data.length > 0 ? encodeCursor(data[data.length - 1]) : null;
+
+    return { data, nextCursor, hasMore };
   }
 
   /** Cancel a pending withdrawal that has not yet been submitted on-chain. */
@@ -346,6 +482,24 @@ export class WithdrawalService {
     }
   }
 
+  /**
+   * Track on-chain confirmations for a submitted withdrawal.
+   *
+   * Error handling strategy
+   * ─────────────────────────────────────────────────────────────────────────
+   * • Recoverable (transport/RPC outage, rate-limit, etc.): retry with
+   *   exponential back-off up to MAX_TRACK_RETRIES.  The record stays in
+   *   'submitted' between attempts so a concurrent reconciliation pass can
+   *   also pick it up.
+   *
+   * • Terminal on receipt: null receipt after provider timeout → 'failed'
+   *   (transaction was dropped / never mined).
+   *   receipt.status === 0 → 'failed' (EVM revert — definitive chain outcome).
+   *
+   * • Exhausted retries without a receipt: the record is left in 'submitted'
+   *   (not 'failed') so the next reconciliation pass can retry cleanly once
+   *   RPC is healthy again.
+   */
   private async trackConfirmations(
     withdrawalId: string,
     txHash: string,
@@ -353,43 +507,79 @@ export class WithdrawalService {
     const record = this.withdrawals.get(withdrawalId);
     if (!record) return;
 
-    try {
-      const receipt = await this.provider.waitForTransaction(
-        txHash,
-        record.requiredConfirmations,
-      );
+    let attempt = 0;
 
-      if (!receipt) {
-        record.status = 'failed';
-        record.failureReason = 'Transaction not found on-chain';
-        this.withdrawals.set(withdrawalId, record);
-        return;
-      }
+    while (attempt <= MAX_TRACK_RETRIES) {
+      try {
+        const receipt = await this.provider.waitForTransaction(
+          txHash,
+          record.requiredConfirmations,
+        );
 
-      if (receipt.status === 0) {
-        record.status = 'failed';
-        record.failureReason = 'Transaction reverted on-chain';
-      } else {
+        // ── Terminal: provider confirmed the tx does not exist / was dropped ──
+        if (!receipt) {
+          record.status = 'failed';
+          record.failureReason = 'Transaction not found on-chain (dropped or never mined)';
+          this.withdrawals.set(withdrawalId, record);
+          this.logger.warn(
+            `Withdrawal ${withdrawalId} marked failed — no receipt returned`,
+          );
+          return;
+        }
+
+        // ── Terminal: EVM revert — receipt is authoritative ──────────────────
+        if (receipt.status === 0) {
+          record.status = 'failed';
+          record.failureReason = 'Transaction reverted on-chain';
+          this.withdrawals.set(withdrawalId, record);
+          this.logger.warn(
+            `Withdrawal ${withdrawalId} marked failed — EVM revert (block ${receipt.blockNumber})`,
+          );
+          return;
+        }
+
+        // ── Success ───────────────────────────────────────────────────────────
         record.status = 'confirmed';
         record.confirmations = record.requiredConfirmations;
         record.blockNumber = receipt.blockNumber;
         record.confirmedAt = new Date();
+        this.withdrawals.set(withdrawalId, record);
+        this.logger.log(
+          `Withdrawal ${withdrawalId} confirmed at block ${receipt.blockNumber}`,
+        );
+        return;
+      } catch (err) {
+        if (isRecoverableProviderError(err)) {
+          // Leave status as 'submitted' — do not mark failed.
+          const delay = backoffMs(attempt);
+          this.logger.warn(
+            `Recoverable provider error tracking ${withdrawalId} ` +
+              `(attempt ${attempt + 1}/${MAX_TRACK_RETRIES + 1}), ` +
+              `retrying in ${delay} ms: ${(err as Error).message ?? err}`,
+          );
+          attempt += 1;
+          if (attempt > MAX_TRACK_RETRIES) break;
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        } else {
+          // Non-recoverable application-level error — surface immediately.
+          this.logger.error(
+            `Non-recoverable error tracking ${withdrawalId}`,
+            err,
+          );
+          record.status = 'failed';
+          record.failureReason =
+            err instanceof Error ? err.message : 'Unknown error';
+          this.withdrawals.set(withdrawalId, record);
+          return;
+        }
       }
-
-      this.withdrawals.set(withdrawalId, record);
-      this.logger.log(
-        `Withdrawal ${withdrawalId} status updated to ${record.status}`,
-      );
-    } catch (err) {
-      this.logger.error(
-        `Error tracking confirmations for ${withdrawalId}`,
-        err,
-      );
-      record.status = 'failed';
-      record.failureReason =
-        err instanceof Error ? err.message : 'Unknown error';
-      this.withdrawals.set(withdrawalId, record);
     }
+
+    // Retries exhausted — keep 'submitted' so reconciliation can resume.
+    this.logger.error(
+      `Tracking exhausted ${MAX_TRACK_RETRIES} retries for ${withdrawalId}. ` +
+        `Record left in 'submitted' for reconciliation.`,
+    );
   }
 
   private async refreshConfirmations(record: WithdrawalRecord): Promise<void> {

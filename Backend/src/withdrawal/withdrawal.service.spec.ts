@@ -148,9 +148,9 @@ describe('WithdrawalService', () => {
         amount: AMOUNT,
       });
 
-      const list = service.listWithdrawals(USER_ID, {});
-      expect(list).toHaveLength(1);
-      expect(list[0].userId).toBe(USER_ID);
+      const page = service.listWithdrawals(USER_ID, {});
+      expect(page.data).toHaveLength(1);
+      expect(page.data[0].userId).toBe(USER_ID);
     });
 
     it('should filter by status when provided', () => {
@@ -165,8 +165,43 @@ describe('WithdrawalService', () => {
       const confirmed = service.listWithdrawals(USER_ID, {
         status: 'confirmed',
       });
-      expect(pending).toHaveLength(1);
-      expect(confirmed).toHaveLength(0);
+      expect(pending.data).toHaveLength(1);
+      expect(confirmed.data).toHaveLength(0);
+    });
+
+    it('should paginate and return a cursor when more records exist', () => {
+      // Create 3 withdrawals for the same user
+      for (let i = 0; i < 3; i++) {
+        service.initiateWithdrawal(USER_ID, {
+          fromAddress: FROM,
+          toAddress: TO,
+          tokenAddress: 'NATIVE',
+          amount: AMOUNT,
+        });
+      }
+
+      const page1 = service.listWithdrawals(USER_ID, { limit: 2 });
+      expect(page1.data).toHaveLength(2);
+      expect(page1.hasMore).toBe(true);
+      expect(page1.nextCursor).not.toBeNull();
+
+      const page2 = service.listWithdrawals(USER_ID, {
+        limit: 2,
+        cursor: page1.nextCursor!,
+      });
+      expect(page2.data).toHaveLength(1);
+      expect(page2.hasMore).toBe(false);
+      expect(page2.nextCursor).toBeNull();
+
+      // No duplicate IDs across pages
+      const allIds = [...page1.data, ...page2.data].map((w) => w.id);
+      expect(new Set(allIds).size).toBe(3);
+    });
+
+    it('should reject an invalid cursor', () => {
+      expect(() =>
+        service.listWithdrawals(USER_ID, { cursor: '!!!not-base64url!!!' }),
+      ).toThrow(BadRequestException);
     });
   });
 
