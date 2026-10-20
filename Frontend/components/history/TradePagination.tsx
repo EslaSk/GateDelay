@@ -72,7 +72,9 @@ const fetchTradeHistory = async (
     throw new Error("Failed to fetch trade history");
   }
   const data = await response.json();
-  return data.data;
+  
+  // Validate response before returning
+  return validateTradeHistoryResponse(data);
 };
 
 export default function TradePagination({
