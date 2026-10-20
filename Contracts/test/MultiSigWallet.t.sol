@@ -17,7 +17,7 @@ contract MultiSigWalletTest is Test {
         signers[1] = signer2;
         signers[2] = signer3;
 
-        wallet = new MultiSigWallet(signers, 2);
+        wallet = new MultiSigWallet(signers, 2, 2); // threshold=2, rejectionThreshold=2
     }
 
     function test_Constructor() public view {
@@ -25,6 +25,8 @@ contract MultiSigWalletTest is Test {
         assertTrue(wallet.checkSigner(signer1));
         assertTrue(wallet.checkSigner(signer2));
         assertTrue(wallet.checkSigner(signer3));
+        assertEq(wallet.threshold(), 2);
+        assertEq(wallet.getRejectionThreshold(), 2);
     }
 
     function test_CreateTransaction() public {
@@ -74,8 +76,12 @@ contract MultiSigWalletTest is Test {
         wallet.approveTransaction(txId);
 
         vm.prank(signer1);
-        vm.expectRevert();
+        // Calling an EOA (non-contract) with value=0 succeeds in EVM (returns success=true)
+        // The transaction executes successfully but no actual function is called
         wallet.executeTransaction(txId);
+
+        MultiSigWallet.Transaction memory tx = wallet.getTransaction(txId);
+        assertEq(uint256(tx.status), uint256(MultiSigWallet.TransactionStatus.EXECUTED));
     }
 
     function test_ExecuteTransaction_InsufficientApprovals() public {
@@ -90,15 +96,51 @@ contract MultiSigWalletTest is Test {
         wallet.executeTransaction(txId);
     }
 
-    function test_RejectTransaction() public {
+    function test_RejectTransaction_RequiresThreshold() public {
+        vm.prank(signer1);
+        uint256 txId = wallet.createTransaction(target, 0, abi.encodeWithSignature("test()"));
+
+        // First rejection - should not reject yet (threshold=2)
+        vm.prank(signer1);
+        wallet.rejectTransaction(txId);
+
+        MultiSigWallet.Transaction memory tx = wallet.getTransaction(txId);
+        assertEq(uint256(tx.status), uint256(MultiSigWallet.TransactionStatus.PENDING));
+        assertEq(wallet.getRejectionCount(txId), 1);
+
+        // Second rejection - should reject now
+        vm.prank(signer2);
+        wallet.rejectTransaction(txId);
+
+        tx = wallet.getTransaction(txId);
+        assertEq(uint256(tx.status), uint256(MultiSigWallet.TransactionStatus.REJECTED));
+        assertEq(wallet.getRejectionCount(txId), 2);
+    }
+
+    function test_RejectTransaction_DuplicateRejection() public {
         vm.prank(signer1);
         uint256 txId = wallet.createTransaction(target, 0, abi.encodeWithSignature("test()"));
 
         vm.prank(signer1);
         wallet.rejectTransaction(txId);
 
-        MultiSigWallet.Transaction memory tx = wallet.getTransaction(txId);
-        assertEq(uint256(tx.status), uint256(MultiSigWallet.TransactionStatus.REJECTED));
+        vm.prank(signer1);
+        vm.expectRevert(MultiSigWallet.InvalidTransaction.selector);
+        wallet.rejectTransaction(txId);
+    }
+
+    function test_RejectTransaction_NotPending() public {
+        vm.prank(signer1);
+        uint256 txId = wallet.createTransaction(target, 0, abi.encodeWithSignature("test()"));
+
+        vm.prank(signer1);
+        wallet.approveTransaction(txId);
+        vm.prank(signer2);
+        wallet.approveTransaction(txId);
+
+        vm.prank(signer1);
+        vm.expectRevert(MultiSigWallet.TransactionNotPending.selector);
+        wallet.rejectTransaction(txId);
     }
 
     function test_AddSigner() public {
@@ -137,6 +179,13 @@ contract MultiSigWalletTest is Test {
         assertEq(uint256(tx.status), uint256(MultiSigWallet.TransactionStatus.PENDING));
     }
 
+    function test_UpdateRejectionThreshold() public {
+        vm.prank(signer1);
+        wallet.updateRejectionThreshold(3);
+
+        assertEq(wallet.getRejectionThreshold(), 3);
+    }
+
     function test_GetSigners() public view {
         address[] memory signers = wallet.getSigners();
         assertEq(signers.length, 3);
@@ -148,7 +197,16 @@ contract MultiSigWalletTest is Test {
         signers[1] = address(0x11);
 
         vm.expectRevert(MultiSigWallet.InvalidThreshold.selector);
-        new MultiSigWallet(signers, 3);
+        new MultiSigWallet(signers, 3, 1);
+    }
+
+    function test_InvalidRejectionThreshold() public {
+        address[] memory signers = new address[](2);
+        signers[0] = address(0x10);
+        signers[1] = address(0x11);
+
+        vm.expectRevert(MultiSigWallet.InvalidThreshold.selector);
+        new MultiSigWallet(signers, 1, 3);
     }
 
     function test_DuplicateSigner() public {
@@ -157,7 +215,21 @@ contract MultiSigWalletTest is Test {
         signers[1] = address(0x10);
 
         vm.expectRevert(MultiSigWallet.DuplicateSigner.selector);
-        new MultiSigWallet(signers, 1);
+        new MultiSigWallet(signers, 1, 1);
+    }
+
+    function test_HasRejected() public {
+        vm.prank(signer1);
+        uint256 txId = wallet.createTransaction(target, 0, abi.encodeWithSignature("test()"));
+
+        assertFalse(wallet.hasRejected(txId, signer1));
+        assertFalse(wallet.hasRejected(txId, signer2));
+
+        vm.prank(signer1);
+        wallet.rejectTransaction(txId);
+
+        assertTrue(wallet.hasRejected(txId, signer1));
+        assertFalse(wallet.hasRejected(txId, signer2));
     }
 
     function test_ReceiveEther() public {
