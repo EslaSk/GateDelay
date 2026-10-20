@@ -232,10 +232,11 @@ export default function TradePagination({
       {showFilters && (
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1">
-            <label className="text-xs" style={{ color: "var(--muted)" }}>
+            <label htmlFor={startDateId} className="text-xs" style={{ color: "var(--muted)" }}>
               Start Date
             </label>
             <input
+              id={startDateId}
               type="date"
               value={startDate}
               onChange={(e) => {
