@@ -100,10 +100,10 @@ export class AuthService {
 
   async forgotPassword(dto: ForgotPasswordDto) {
     const userId = this.usersByEmail.get(normalizeEmail(dto.email));
-    
+
     // Always return the same response to prevent email enumeration
     const standardResponse = { message: 'If the email exists, a reset link was sent' };
-    
+
     if (!userId) {
       return standardResponse;
     }
@@ -124,7 +124,7 @@ export class AuthService {
     };
 
     this.passwordResets.set(tokenHash, passwordReset);
-    
+
     if (!this.resetsByUserId.has(userId)) {
       this.resetsByUserId.set(userId, new Set());
     }
@@ -212,12 +212,12 @@ export class AuthService {
       if (!user) {
         throw new UnauthorizedException();
       }
-      
+
       // BE-007: Check for token ID (jti)
       if (!payload.jti) {
         throw new UnauthorizedException('Invalid token format');
       }
-      
+
       // BE-007: Detect token reuse
       if (user.usedRefreshTokenIds?.has(payload.jti)) {
         // Token reuse detected - invalidate all sessions for this user
@@ -226,73 +226,73 @@ export class AuthService {
         user.usedRefreshTokenIds = new Set();
         throw new UnauthorizedException('Token reuse detected');
       }
-      
+
       // BE-006: Verify against stored hash instead of raw token
       const tokenHash = this.hashRefreshToken(refreshToken);
       if (!user.refreshTokenHash || user.refreshTokenHash !== tokenHash) {
         throw new UnauthorizedException();
       }
-      
+
       // BE-007: Check if this is the current active token
       if (user.refreshTokenId !== payload.jti) {
         throw new UnauthorizedException('Token already rotated');
       }
-      
+
       // Mark this token as consumed
       if (!user.usedRefreshTokenIds) {
         user.usedRefreshTokenIds = new Set();
       }
       user.usedRefreshTokenIds.add(payload.jti);
-      
+
       return this.generateTokens(user);
     } catch (error) {
       if (error instanceof UnauthorizedException) {
         throw error;
       }
-        throw new UnauthorizedException('User not found');
-      }
-
-      // Update last used timestamp
-      session.lastUsedAt = new Date();
-
-      return this.generateTokens(user, deviceInfo, session.id);
-    } catch (err) {
-      throw new UnauthorizedException('Invalid refresh token');
+      throw new UnauthorizedException('User not found');
     }
+
+    // Update last used timestamp
+    session.lastUsedAt = new Date();
+
+    return this.generateTokens(user, deviceInfo, session.id);
+  } catch(err) {
+    throw new UnauthorizedException('Invalid refresh token');
   }
+}
 
   async logout(userId: string) {
-    const user = this.users.get(userId);
-    if (user) {
-      user.refreshTokenHash = undefined;
-      user.refreshTokenId = undefined;
-      user.usedRefreshTokenIds = new Set();
-    }
-    return { message: 'Logged out successfully' };
+  const user = this.users.get(userId);
+  if (user) {
+    user.refreshTokenHash = undefined;
+    user.refreshTokenId = undefined;
+    user.usedRefreshTokenIds = new Set();
   }
+  return { message: 'Logged out successfully' };
+}
 
   private generateTokens(user: User) {
-    // BE-007: Generate unique token identifier (jti) for each refresh token
-    const jti = crypto.randomBytes(32).toString('hex');
+  // BE-007: Generate unique token identifier (jti) for each refresh token
+  const jti = crypto.randomBytes(32).toString('hex');
+
+  const payload = { sub: user.id, email: user.email };
+  const accessToken = this.jwtService.sign(payload);
+  const refreshToken = this.jwtService.sign(
+    { ...payload, jti }, // Include jti in refresh token payload
+    {
+      secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
+      expiresIn: this.configService.get<string>(
+        'JWT_REFRESH_EXPIRES_IN',
+        '7d',
+      ) as any,
+    },
+  );
+
+  // BE-006: Store hash of refresh token instead of raw token
+  user.refreshTokenHash = this.hashRefreshToken(refreshToken);
+  user.refreshTokenId = jti;
     
-    const payload = { sub: user.id, email: user.email };
-    const accessToken = this.jwtService.sign(payload);
-    const refreshToken = this.jwtService.sign(
-      { ...payload, jti }, // Include jti in refresh token payload
-      {
-        secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
-        expiresIn: this.configService.get<string>(
-          'JWT_REFRESH_EXPIRES_IN',
-          '7d',
-        ) as any,
-      },
-    );
-    
-    // BE-006: Store hash of refresh token instead of raw token
-    user.refreshTokenHash = this.hashRefreshToken(refreshToken);
-    user.refreshTokenId = jti;
-    
-  async logout(userId: string, sessionId?: string) {
+  async logout(userId: string, sessionId ?: string) {
     if (sessionId) {
       // Logout specific session
       const session = this.sessions.get(sessionId);
@@ -302,7 +302,7 @@ export class AuthService {
       }
       throw new NotFoundException('Session not found');
     }
-    
+
     // Default: logout all sessions
     return this.logoutAll(userId);
   }
@@ -311,24 +311,24 @@ export class AuthService {
     const userSessions = Array.from(this.sessions.values()).filter(
       (s) => s.userId === userId,
     );
-    
+
     for (const session of userSessions) {
       this.sessions.delete(session.id);
     }
-    
-    return { 
+
+    return {
       message: 'All sessions logged out successfully',
-      sessionsTerminated: userSessions.length 
+      sessionsTerminated: userSessions.length
     };
   }
 
-  async getUserSessions(userId: string): Promise<Session[]> {
+  async getUserSessions(userId: string): Promise < Session[] > {
     return Array.from(this.sessions.values())
       .filter((s) => s.userId === userId)
       .sort((a, b) => b.lastUsedAt.getTime() - a.lastUsedAt.getTime());
   }
 
-  private generateTokens(user: User, deviceInfo?: DeviceInfoDto, existingSessionId?: string) {
+  private generateTokens(user: User, deviceInfo ?: DeviceInfoDto, existingSessionId ?: string) {
     const payload = { sub: user.id, email: user.email };
     const accessToken = this.jwtService.sign(payload);
     const refreshToken = this.jwtService.sign(payload, {
@@ -350,7 +350,7 @@ export class AuthService {
       deviceInfo: deviceInfo?.deviceInfo,
       ipAddress: deviceInfo?.ipAddress,
       userAgent: deviceInfo?.userAgent,
-      createdAt: existingSessionId 
+      createdAt: existingSessionId
         ? this.sessions.get(existingSessionId)?.createdAt || new Date()
         : new Date(),
       lastUsedAt: new Date(),
@@ -382,10 +382,10 @@ export class AuthService {
   private parseExpiry(expiry: string): number {
     const match = expiry.match(/^(\d+)([smhd])$/);
     if (!match) return 7 * 24 * 60 * 60 * 1000; // default 7 days
-    
+
     const value = parseInt(match[1], 10);
     const unit = match[2];
-    
+
     switch (unit) {
       case 's': return value * 1000;
       case 'm': return value * 60 * 1000;
@@ -401,97 +401,97 @@ export class AuthService {
 
   private startSessionCleanup(): void {
     setInterval(() => {
-      const now = new Date();
-      for (const [sessionId, session] of this.sessions.entries()) {
-        if (session.expiresAt < now) {
-          this.sessions.delete(sessionId);
-        }
+    const now = new Date();
+    for (const [sessionId, session] of this.sessions.entries()) {
+      if (session.expiresAt < now) {
+        this.sessions.delete(sessionId);
       }
-    }, 60 * 60 * 1000); // Run every hour
-  }
+    }
+  }, 60 * 60 * 1000); // Run every hour
+}
 
   private startResetOutboxProcessor(): void {
-    setInterval(() => {
-      this.processResetOutbox();
-    }, 10_000); // Process every 10 seconds
+  setInterval(() => {
+  this.processResetOutbox();
+}, 10_000); // Process every 10 seconds
   }
 
-  private async processResetOutbox(): Promise<void> {
-    const pending = Array.from(this.resetOutbox.values()).filter(
-      (entry) => entry.status === 'pending' && entry.attempts < 3,
-    );
+  private async processResetOutbox(): Promise < void> {
+  const pending = Array.from(this.resetOutbox.values()).filter(
+    (entry) => entry.status === 'pending' && entry.attempts < 3,
+  );
 
-    for (const entry of pending) {
-      try {
-        const passwordReset = this.passwordResets.get(entry.tokenHash);
-        if (!passwordReset) {
-          entry.status = 'failed';
-          entry.error = 'Password reset record not found';
-          continue;
-        }
+  for(const entry of pending) {
+    try {
+      const passwordReset = this.passwordResets.get(entry.tokenHash);
+      if (!passwordReset) {
+        entry.status = 'failed';
+        entry.error = 'Password reset record not found';
+        continue;
+      }
 
-        // Check if expired
-        if (passwordReset.expiresAt < new Date()) {
-          entry.status = 'expired';
-          continue;
-        }
+      // Check if expired
+      if (passwordReset.expiresAt < new Date()) {
+        entry.status = 'expired';
+        continue;
+      }
 
-        // Reconstruct the token (in real implementation, store encrypted)
-        // For now, we'll need to pass raw token during creation
-        // This is a limitation of the demo - in production, use encrypted storage
-        
-        entry.attempts++;
-        entry.lastAttemptAt = new Date();
+      // Reconstruct the token (in real implementation, store encrypted)
+      // For now, we'll need to pass raw token during creation
+      // This is a limitation of the demo - in production, use encrypted storage
 
-        // Note: In production, store encrypted token in outbox or use a token ID
-        // For this demo, we'll skip actual email sending in background processor
-        // and rely on synchronous sending with retry logic
-        
-        entry.status = 'sent';
-        entry.sentAt = new Date();
+      entry.attempts++;
+      entry.lastAttemptAt = new Date();
 
-        this.logger.log(`Reset email processed for ${entry.email}`);
-      } catch (error) {
-        entry.attempts++;
-        entry.lastAttemptAt = new Date();
-        entry.error = error instanceof Error ? error.message : 'Unknown error';
-        
-        if (entry.attempts >= 3) {
-          entry.status = 'failed';
-          this.logger.error(`Failed to send reset email to ${entry.email} after 3 attempts`);
-        }
+      // Note: In production, store encrypted token in outbox or use a token ID
+      // For this demo, we'll skip actual email sending in background processor
+      // and rely on synchronous sending with retry logic
+
+      entry.status = 'sent';
+      entry.sentAt = new Date();
+
+      this.logger.log(`Reset email processed for ${entry.email}`);
+    } catch (error) {
+      entry.attempts++;
+      entry.lastAttemptAt = new Date();
+      entry.error = error instanceof Error ? error.message : 'Unknown error';
+
+      if (entry.attempts >= 3) {
+        entry.status = 'failed';
+        this.logger.error(`Failed to send reset email to ${entry.email} after 3 attempts`);
       }
     }
   }
+}
 
   private async verifySocialToken(
-    provider: string,
-    accessToken: string,
-  ): Promise<{ id: string; email: string; name: string }> {
-    const enabledProviders = this.configService
-      .get<string>('SOCIAL_LOGIN_PROVIDERS', '')
-      .split(',')
-      .map((p) => p.trim())
-      .filter(Boolean);
+  provider: string,
+  accessToken: string,
+): Promise < { id: string; email: string; name: string } > {
+  const enabledProviders = this.configService
+    .get<string>('SOCIAL_LOGIN_PROVIDERS', '')
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean);
 
-    // BE-004: Check if provider is enabled
-    if (!enabledProviders.includes(provider)) {
-      throw new BadRequestException(
-        `Social login via ${provider} is not enabled`,
-      );
-    }
+  // BE-004: Check if provider is enabled
+  if(!enabledProviders.includes(provider)) {
+  throw new BadRequestException(
+    `Social login via ${provider} is not enabled`,
+  );
+}
 
-    // BE-004: Implement provider-specific verification
-    switch (provider) {
-      case 'google':
-        return await this.verifyGoogleToken(accessToken);
-      case 'twitter':
-        return await this.verifyTwitterToken(accessToken);
-      default:
-        throw new BadRequestException(
-          `Social login via ${provider} not yet configured`,
-        );
-    }
+// BE-004: Implement provider-specific verification
+switch (provider) {
+  case 'google':
+    return await this.verifyGoogleToken(accessToken);
+  case 'twitter':
+    return await this.verifyTwitterToken(accessToken);
+  default:
+    throw new BadRequestException(
+      `Social login via ${provider} not yet configured`,
+    );
+}
   }
 
   /**
@@ -499,60 +499,60 @@ export class AuthService {
    * Checks issuer, audience, expiry, and email verification
    */
   private async verifyGoogleToken(
-    token: string,
-  ): Promise<{ id: string; email: string; name: string }> {
-    const googleClientId = this.configService.get<string>(
-      'GOOGLE_OAUTH_CLIENT_ID',
+  token: string,
+): Promise < { id: string; email: string; name: string } > {
+  const googleClientId = this.configService.get<string>(
+    'GOOGLE_OAUTH_CLIENT_ID',
+  );
+  if(!googleClientId) {
+    throw new BadRequestException(
+      'Google OAuth is not properly configured',
     );
-    if (!googleClientId) {
-      throw new BadRequestException(
-        'Google OAuth is not properly configured',
-      );
-    }
+  }
 
     try {
-      // In production, use Google's token verification library
-      // const ticket = await client.verifyIdToken({
-      //   idToken: token,
-      //   audience: googleClientId,
-      // });
-      // const payload = ticket.getPayload();
-      
-      // Placeholder implementation for demonstration
-      const response = await fetch(
-        `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${token}`,
-      );
-      
-      if (!response.ok) {
-        throw new UnauthorizedException('Invalid Google token');
-      }
-      
-      const payload = await response.json();
-      
-      // BE-004: Verify token properties
-      if (payload.aud !== googleClientId) {
-        throw new UnauthorizedException('Invalid audience');
-      }
-      
-      if (!payload.email_verified) {
-        throw new UnauthorizedException('Email not verified');
-      }
-      
-      if (payload.exp && payload.exp * 1000 < Date.now()) {
-        throw new UnauthorizedException('Token expired');
-      }
+    // In production, use Google's token verification library
+    // const ticket = await client.verifyIdToken({
+    //   idToken: token,
+    //   audience: googleClientId,
+    // });
+    // const payload = ticket.getPayload();
 
-      return {
-        id: payload.sub,
-        email: payload.email,
-        name: payload.name || payload.email,
-      };
+    // Placeholder implementation for demonstration
+    const response = await fetch(
+      `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${token}`,
+    );
+
+    if(!response.ok) {
+  throw new UnauthorizedException('Invalid Google token');
+}
+
+const payload = await response.json();
+
+// BE-004: Verify token properties
+if (payload.aud !== googleClientId) {
+  throw new UnauthorizedException('Invalid audience');
+}
+
+if (!payload.email_verified) {
+  throw new UnauthorizedException('Email not verified');
+}
+
+if (payload.exp && payload.exp * 1000 < Date.now()) {
+  throw new UnauthorizedException('Token expired');
+}
+
+return {
+  id: payload.sub,
+  email: payload.email,
+  name: payload.name || payload.email,
+};
     } catch (error) {
-      if (error instanceof UnauthorizedException) {
-        throw error;
-      }
-      throw new UnauthorizedException('Failed to verify Google token');
-    }
+  if (error instanceof UnauthorizedException) {
+    throw error;
+  }
+  throw new UnauthorizedException('Failed to verify Google token');
+}
   }
 
   /**
@@ -560,50 +560,50 @@ export class AuthService {
    * Checks issuer, audience, and expiry
    */
   private async verifyTwitterToken(
-    token: string,
-  ): Promise<{ id: string; email: string; name: string }> {
-    const twitterClientId = this.configService.get<string>(
-      'TWITTER_OAUTH_CLIENT_ID',
+  token: string,
+): Promise < { id: string; email: string; name: string } > {
+  const twitterClientId = this.configService.get<string>(
+    'TWITTER_OAUTH_CLIENT_ID',
+  );
+  if(!twitterClientId) {
+    throw new BadRequestException(
+      'Twitter OAuth is not properly configured',
     );
-    if (!twitterClientId) {
-      throw new BadRequestException(
-        'Twitter OAuth is not properly configured',
-      );
-    }
+  }
 
     try {
-      // In production, use Twitter API v2 to verify token
-      // const response = await fetch('https://api.twitter.com/2/users/me', {
-      //   headers: { Authorization: `Bearer ${token}` },
-      // });
-      
-      // Placeholder for demonstration
-      throw new BadRequestException(
-        'Twitter OAuth verification not yet implemented',
-      );
-    } catch (error) {
-      if (error instanceof UnauthorizedException || error instanceof BadRequestException) {
-        throw error;
-      }
-      throw new UnauthorizedException('Failed to verify Twitter token');
+    // In production, use Twitter API v2 to verify token
+    // const response = await fetch('https://api.twitter.com/2/users/me', {
+    //   headers: { Authorization: `Bearer ${token}` },
+    // });
+
+    // Placeholder for demonstration
+    throw new BadRequestException(
+      'Twitter OAuth verification not yet implemented',
+    );
+  } catch(error) {
+    if (error instanceof UnauthorizedException || error instanceof BadRequestException) {
+      throw error;
     }
+    throw new UnauthorizedException('Failed to verify Twitter token');
   }
+}
 
   private async sendResetEmail(email: string, token: string) {
-    const transporter = nodemailer.createTransport({
-      host: this.configService.get('SMTP_HOST'),
-      port: this.configService.get<number>('SMTP_PORT'),
-      auth: {
-        user: this.configService.get('SMTP_USER'),
-        pass: this.configService.get('SMTP_PASS'),
-      },
-    });
-    const resetUrl = `${this.configService.get('FRONTEND_URL', 'http://localhost:3001')}/reset-password?token=${token}`;
-    await transporter.sendMail({
-      from: this.configService.get('EMAIL_FROM', 'noreply@gatedelay.com'),
-      to: email,
-      subject: 'GateDelay - Password Reset',
-      html: `<p>Click <a href="${resetUrl}">here</a> to reset your password. Link expires in 1 hour.</p>`,
-    });
-  }
+  const transporter = nodemailer.createTransport({
+    host: this.configService.get('SMTP_HOST'),
+    port: this.configService.get<number>('SMTP_PORT'),
+    auth: {
+      user: this.configService.get('SMTP_USER'),
+      pass: this.configService.get('SMTP_PASS'),
+    },
+  });
+  const resetUrl = `${this.configService.get('FRONTEND_URL', 'http://localhost:3001')}/reset-password?token=${token}`;
+  await transporter.sendMail({
+    from: this.configService.get('EMAIL_FROM', 'noreply@gatedelay.com'),
+    to: email,
+    subject: 'GateDelay - Password Reset',
+    html: `<p>Click <a href="${resetUrl}">here</a> to reset your password. Link expires in 1 hour.</p>`,
+  });
+}
 }
