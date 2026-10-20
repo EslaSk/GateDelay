@@ -37,7 +37,7 @@ const TEST_WALLET: MultisigWallet = {
 /** Build an authenticated request where the actor signs the route proof. */
 async function makeAuthRequest(
   body: unknown,
-  signer: ethers.Wallet,
+  signer: ethers.Wallet | ethers.HDNodeWallet,
   simulate = true,
 ): Promise<Request> {
   const headers: Record<string, string> = {
@@ -62,7 +62,7 @@ async function makeAuthRequest(
 /** Sign the canonical transaction digest and return the EIP-191 signature. */
 async function signTx(
   txId: string,
-  signer: ethers.Wallet,
+  signer: ethers.Wallet | ethers.HDNodeWallet,
 ): Promise<string> {
   const tx = getTransactionStatus(txId);
   const digest = buildTransactionDigest(tx);

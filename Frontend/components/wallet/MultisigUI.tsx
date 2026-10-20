@@ -97,6 +97,10 @@ async function executeTx(payload: {
 const STATUS_COLORS: Record<MultisigTransaction["status"], string> = {
   Pending: "#f59e0b",
   Ready: "#3b82f6",
+  Submitted: "#3b82f6",
+  Mined: "#8b5cf6",
+  Confirmed: "#22c55e",
+  Failed: "#ef4444",
   Executed: "#22c55e",
 };
 

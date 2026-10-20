@@ -23,6 +23,8 @@
  *  StorageEntry – shape of a stored record
  */
 
+import { createHash } from "node:crypto";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -71,7 +73,7 @@ class MemoryAdapter implements IpfsStorageAdapter {
     entry: Omit<StorageEntry, "hash">,
     suggestedHash?: string
   ): Promise<string> {
-    const hash = suggestedHash ?? generateHash();
+    const hash = suggestedHash ?? generateHash(entry.data);
     this.store.set(hash, { ...entry, hash });
     return hash;
   }
@@ -165,6 +167,20 @@ function resolveGatewayBase(): string {
  * Used by CIDv1 to produce the familiar "bafy…" prefix.
  */
 const BASE32_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
+
+/** CIDv0: base58btc encoding of the SHA-256 multihash of the mock payload. */
+function generateHash(data: unknown): string {
+  const digest = createHash("sha256").update(JSON.stringify(data)).digest();
+  const multihash = Buffer.concat([Buffer.from([0x12, 0x20]), digest]);
+  const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  let value = BigInt(`0x${multihash.toString("hex")}`);
+  let result = "";
+  while (value > BigInt(0)) {
+    result = alphabet[Number(value % BigInt(58))] + result;
+    value /= BigInt(58);
+  }
+  return result;
+}
 
 function base32Encode(bytes: Uint8Array): string {
   let bits = 0;

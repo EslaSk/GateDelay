@@ -12,7 +12,6 @@ import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import * as nodemailer from 'nodemailer';
-import * as crypto from 'crypto';
 import {
   RegisterDto,
   LoginDto,
@@ -182,6 +181,8 @@ export class AuthService {
     user.refreshTokenId = undefined;
     user.usedRefreshTokenIds = new Set();
 
+    await this.logoutAll(user.id);
+
     this.logger.log(`Password reset successfully for user ${user.id}`);
 
     return { message: 'Password reset successfully' };
@@ -193,9 +194,20 @@ export class AuthService {
         secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
       });
 
-      // Find session by refresh token
+      const user = this.users.get(payload.sub);
+      if (!user || !payload.jti) {
+        throw new UnauthorizedException('Invalid refresh token');
+      }
+
+      if (user.usedRefreshTokenIds?.has(payload.jti)) {
+        await this.logoutAll(user.id);
+        throw new UnauthorizedException('Token reuse detected');
+      }
+
+      const tokenHash = this.hashRefreshToken(refreshToken);
+      // Each device has its own active refresh-token verifier.
       const session = Array.from(this.sessions.values()).find(
-        (s) => s.refreshToken === refreshToken && s.userId === payload.sub,
+        (s) => s.refreshTokenHash === tokenHash && s.userId === payload.sub,
       );
 
       if (!session) {
@@ -208,91 +220,22 @@ export class AuthService {
         throw new UnauthorizedException('Session expired');
       }
 
-      const user = this.users.get(payload.sub);
-      if (!user) {
-        throw new UnauthorizedException();
-      }
-
-      // BE-007: Check for token ID (jti)
-      if (!payload.jti) {
-        throw new UnauthorizedException('Invalid token format');
-      }
-
-      // BE-007: Detect token reuse
-      if (user.usedRefreshTokenIds?.has(payload.jti)) {
-        // Token reuse detected - invalidate all sessions for this user
-        user.refreshTokenHash = undefined;
-        user.refreshTokenId = undefined;
-        user.usedRefreshTokenIds = new Set();
-        throw new UnauthorizedException('Token reuse detected');
-      }
-
-      // BE-006: Verify against stored hash instead of raw token
-      const tokenHash = this.hashRefreshToken(refreshToken);
-      if (!user.refreshTokenHash || user.refreshTokenHash !== tokenHash) {
-        throw new UnauthorizedException();
-      }
-
-      // BE-007: Check if this is the current active token
-      if (user.refreshTokenId !== payload.jti) {
-        throw new UnauthorizedException('Token already rotated');
-      }
-
       // Mark this token as consumed
       if (!user.usedRefreshTokenIds) {
         user.usedRefreshTokenIds = new Set();
       }
       user.usedRefreshTokenIds.add(payload.jti);
 
-      return this.generateTokens(user);
+      return this.generateTokens(user, deviceInfo, session.id);
     } catch (error) {
       if (error instanceof UnauthorizedException) {
         throw error;
       }
-      throw new UnauthorizedException('User not found');
+      throw new UnauthorizedException('Invalid refresh token');
     }
-
-    // Update last used timestamp
-    session.lastUsedAt = new Date();
-
-    return this.generateTokens(user, deviceInfo, session.id);
-  } catch(err) {
-    throw new UnauthorizedException('Invalid refresh token');
   }
-}
 
-  async logout(userId: string) {
-  const user = this.users.get(userId);
-  if (user) {
-    user.refreshTokenHash = undefined;
-    user.refreshTokenId = undefined;
-    user.usedRefreshTokenIds = new Set();
-  }
-  return { message: 'Logged out successfully' };
-}
-
-  private generateTokens(user: User) {
-  // BE-007: Generate unique token identifier (jti) for each refresh token
-  const jti = crypto.randomBytes(32).toString('hex');
-
-  const payload = { sub: user.id, email: user.email };
-  const accessToken = this.jwtService.sign(payload);
-  const refreshToken = this.jwtService.sign(
-    { ...payload, jti }, // Include jti in refresh token payload
-    {
-      secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
-      expiresIn: this.configService.get<string>(
-        'JWT_REFRESH_EXPIRES_IN',
-        '7d',
-      ) as any,
-    },
-  );
-
-  // BE-006: Store hash of refresh token instead of raw token
-  user.refreshTokenHash = this.hashRefreshToken(refreshToken);
-  user.refreshTokenId = jti;
-    
-  async logout(userId: string, sessionId ?: string) {
+  async logout(userId: string, sessionId?: string) {
     if (sessionId) {
       // Logout specific session
       const session = this.sessions.get(sessionId);
@@ -308,6 +251,12 @@ export class AuthService {
   }
 
   async logoutAll(userId: string) {
+    const user = this.users.get(userId);
+    if (user) {
+      user.refreshTokenHash = undefined;
+      user.refreshTokenId = undefined;
+      user.usedRefreshTokenIds = new Set();
+    }
     const userSessions = Array.from(this.sessions.values()).filter(
       (s) => s.userId === userId,
     );
@@ -322,16 +271,17 @@ export class AuthService {
     };
   }
 
-  async getUserSessions(userId: string): Promise < Session[] > {
+  async getUserSessions(userId: string): Promise<Session[]> {
     return Array.from(this.sessions.values())
       .filter((s) => s.userId === userId)
       .sort((a, b) => b.lastUsedAt.getTime() - a.lastUsedAt.getTime());
   }
 
-  private generateTokens(user: User, deviceInfo ?: DeviceInfoDto, existingSessionId ?: string) {
+  private generateTokens(user: User, deviceInfo?: DeviceInfoDto, existingSessionId?: string) {
+    const jti = crypto.randomBytes(32).toString('hex');
     const payload = { sub: user.id, email: user.email };
     const accessToken = this.jwtService.sign(payload);
-    const refreshToken = this.jwtService.sign(payload, {
+    const refreshToken = this.jwtService.sign({ ...payload, jti }, {
       secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
       expiresIn: this.configService.get<string>(
         'JWT_REFRESH_EXPIRES_IN',
@@ -343,13 +293,14 @@ export class AuthService {
     const expiresIn = this.configService.get<string>('JWT_REFRESH_EXPIRES_IN', '7d');
     const expiresMs = this.parseExpiry(expiresIn);
 
+    const existingSession = existingSessionId ? this.sessions.get(existingSessionId) : undefined;
     const session: Session = {
       id: sessionId,
       userId: user.id,
-      refreshToken,
-      deviceInfo: deviceInfo?.deviceInfo,
-      ipAddress: deviceInfo?.ipAddress,
-      userAgent: deviceInfo?.userAgent,
+      refreshTokenHash: this.hashRefreshToken(refreshToken),
+      deviceInfo: deviceInfo?.deviceInfo ?? existingSession?.deviceInfo,
+      ipAddress: deviceInfo?.ipAddress ?? existingSession?.ipAddress,
+      userAgent: deviceInfo?.userAgent ?? existingSession?.userAgent,
       createdAt: existingSessionId
         ? this.sessions.get(existingSessionId)?.createdAt || new Date()
         : new Date(),

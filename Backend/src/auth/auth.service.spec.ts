@@ -14,7 +14,7 @@ jest.mock('nodemailer', () => ({
 }));
 
 jest.mock('uuid', () => ({
-  v4: jest.fn(() => 'userid'),
+  v4: jest.fn(() => require('crypto').randomUUID()),
 }));
 
 describe('AuthService abuse paths', () => {
@@ -27,14 +27,21 @@ describe('AuthService abuse paths', () => {
   const validPassword = 'StrongPass1';
 
   beforeEach(() => {
+    jest.useFakeTimers();
     tokenNonce = 0;
+    const payloads = new Map<string, unknown>();
     jwtService = {
-      sign: jest.fn((payload, options) =>
-        options?.secret
+      sign: jest.fn((payload, options) => {
+        const token = options?.secret
           ? `refresh-${payload.sub}-${++tokenNonce}`
-          : `access-${payload.sub}-${++tokenNonce}`,
-      ),
-      verify: jest.fn((token) => ({ sub: token.split('-')[1] })),
+          : `access-${payload.sub}-${++tokenNonce}`;
+        payloads.set(token, payload);
+        return token;
+      }),
+      verify: jest.fn((token) => {
+        if (!payloads.has(token)) throw new Error('Invalid token');
+        return payloads.get(token);
+      }),
     };
     configService = {
       get: jest.fn((key: string, fallback?: string) => {
@@ -57,6 +64,32 @@ describe('AuthService abuse paths', () => {
       jwtService as unknown as JwtService,
       configService as unknown as ConfigService,
     );
+  });
+
+  afterEach(() => {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  });
+
+  it('rotates one device session without invalidating another device', async () => {
+    const first = await service.register({ email: 'user@example.com', password: validPassword });
+    const second = await service.login({ email: 'user@example.com', password: validPassword });
+    const rotated = await service.refreshTokens(first.refreshToken);
+    expect(rotated.sessionId).toBe(first.sessionId);
+    await expect(service.refreshTokens(second.refreshToken)).resolves.toMatchObject({
+      sessionId: second.sessionId,
+    });
+    const sessions = await service.getUserSessions(first.user.id);
+    expect(sessions).toHaveLength(2);
+    expect(sessions.every((session) => !('refreshToken' in session))).toBe(true);
+  });
+
+  it('logs out a selected session while keeping other sessions active', async () => {
+    const first = await service.register({ email: 'user@example.com', password: validPassword });
+    const second = await service.login({ email: 'user@example.com', password: validPassword });
+    await service.logout(first.user.id, first.sessionId);
+    await expect(service.refreshTokens(first.refreshToken)).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(service.refreshTokens(second.refreshToken)).resolves.toMatchObject({ sessionId: second.sessionId });
   });
 
   it('rejects duplicate registration instead of replacing the account', async () => {

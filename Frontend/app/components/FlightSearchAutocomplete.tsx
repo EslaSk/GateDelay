@@ -89,6 +89,9 @@ function parseFlightRecord(f: unknown): FlightSuggestion | null {
 }
 
 export default function FlightSearchAutocomplete({ onSelect, placeholder = "Search flights…" }: Props) {
+  const uid = useId();
+  const listboxId = `${uid}-listbox`;
+  const getOptionId = (index: number) => `${uid}-option-${index}`;
   const [query, setQuery] = useState("");
   const [suggestions, setSuggestions] = useState<FlightSuggestion[]>([]);
   const [loading, setLoading] = useState(false);
