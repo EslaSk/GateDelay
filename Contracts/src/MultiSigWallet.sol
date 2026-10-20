@@ -16,6 +16,8 @@ contract MultiSigWallet {
     error DuplicateSigner();
     error SignerNotFound();
     error InvalidTransaction();
+    error InsufficientRejections();
+    error TransactionNotPending();
 
     // -------------------------------------------------------------------------
     // Types
@@ -28,6 +30,7 @@ contract MultiSigWallet {
         uint256 value;
         bytes data;
         uint256 approvalCount;
+        uint256 rejectionCount;
         TransactionStatus status;
         uint256 createdAt;
         uint256 executedAt;
@@ -50,17 +53,20 @@ contract MultiSigWallet {
     address[] public signers;
     mapping(address => bool) public isSigner;
     uint256 public threshold;
+    uint256 public rejectionThreshold;
 
     mapping(uint256 => Transaction) public transactions;
     mapping(uint256 => mapping(address => bool)) public approvals;
+    mapping(uint256 => mapping(address => bool)) public rejections;
     uint256 public transactionCount;
 
     // -------------------------------------------------------------------------
     // Constructor
     // -------------------------------------------------------------------------
-    constructor(address[] memory _signers, uint256 _threshold) {
+    constructor(address[] memory _signers, uint256 _threshold, uint256 _rejectionThreshold) {
         if (_signers.length == 0) revert InvalidSignerCount();
         if (_threshold == 0 || _threshold > _signers.length) revert InvalidThreshold();
+        if (_rejectionThreshold == 0 || _rejectionThreshold > _signers.length) revert InvalidThreshold();
 
         for (uint256 i = 0; i < _signers.length; i++) {
             if (_signers[i] == address(0)) revert InvalidSignerCount();
@@ -71,6 +77,7 @@ contract MultiSigWallet {
         }
 
         threshold = _threshold;
+        rejectionThreshold = _rejectionThreshold;
     }
 
     // -------------------------------------------------------------------------
@@ -153,6 +160,7 @@ contract MultiSigWallet {
             value: value,
             data: data,
             approvalCount: 0,
+            rejectionCount: 0,
             status: TransactionStatus.PENDING,
             createdAt: block.timestamp,
             executedAt: 0
@@ -173,7 +181,7 @@ contract MultiSigWallet {
         if (txId >= transactionCount) revert TransactionNotFound();
 
         Transaction storage transaction = transactions[txId];
-        if (transaction.status != TransactionStatus.PENDING) revert InvalidTransaction();
+        if (transaction.status != TransactionStatus.PENDING) revert TransactionNotPending();
         if (approvals[txId][msg.sender]) revert InvalidTransaction();
 
         approvals[txId][msg.sender] = true;
@@ -186,14 +194,23 @@ contract MultiSigWallet {
         emit TransactionApproved(txId, msg.sender);
     }
 
+    // -------------------------------------------------------------------------
+    // Internal helpers
+    // -------------------------------------------------------------------------
+    /// @notice Revert with the provided return data, preserving the original revert reason.
+    function _revertWithReason(bytes memory returndata) internal pure {
+        assembly ("memory-safe") {
+            revert(add(returndata, 0x20), mload(returndata))
+        }
+    }
+
     /// @notice Execute an approved transaction.
     /// @param txId The ID of the transaction to execute.
     /// @dev Access: Caller permissions are checked against the sender or assigned roles.
     /// @dev Reverts: `NotSigner` if `!isSigner[msg.sender]` is true. `TransactionNotFound` if `txId
     ///     >= transactionCount` is true. `InsufficientApprovals` if `transaction.status !=
     ///     TransactionStatus.APPROVED` is true. `TransactionAlreadyExecuted` if
-    ///     `transaction.executedAt != 0` is true. "Transaction execution failed" if `success` is
-    ///     false.
+    ///     `transaction.executedAt != 0` is true. Preserves target revert reason if execution fails.
     function executeTransaction(uint256 txId) external {
         if (!isSigner[msg.sender]) revert NotSigner();
         if (txId >= transactionCount) revert TransactionNotFound();
@@ -205,27 +222,37 @@ contract MultiSigWallet {
         transaction.status = TransactionStatus.EXECUTED;
         transaction.executedAt = block.timestamp;
 
-        (bool success,) = transaction.target.call{value: transaction.value}(transaction.data);
-        require(success, "Transaction execution failed");
+        // Use low-level call with revert data preservation
+        (bool success, bytes memory returndata) = transaction.target.call{value: transaction.value}(transaction.data);
+        if (!success) {
+            _revertWithReason(returndata);
+        }
 
         emit TransactionExecuted(txId, msg.sender);
     }
 
-    /// @notice Reject a pending transaction.
+    /// @notice Reject a pending transaction. Requires rejectionThreshold rejections to fully reject.
     /// @param txId The ID of the transaction to reject.
     /// @dev Access: Caller permissions are checked against the sender or assigned roles.
     /// @dev Reverts: `NotSigner` if `!isSigner[msg.sender]` is true. `TransactionNotFound` if `txId
-    ///     >= transactionCount` is true. `InvalidTransaction` if `transaction.status !=
-    ///     TransactionStatus.PENDING` is true.
+    ///     >= transactionCount` is true. `TransactionNotPending` if `transaction.status !=
+    ///     TransactionStatus.PENDING` is true. `InvalidTransaction` if `rejections[txId][msg.sender]`
+    ///     is true.
     function rejectTransaction(uint256 txId) external {
         if (!isSigner[msg.sender]) revert NotSigner();
         if (txId >= transactionCount) revert TransactionNotFound();
 
         Transaction storage transaction = transactions[txId];
-        if (transaction.status != TransactionStatus.PENDING) revert InvalidTransaction();
+        if (transaction.status != TransactionStatus.PENDING) revert TransactionNotPending();
+        if (rejections[txId][msg.sender]) revert InvalidTransaction();
 
-        transaction.status = TransactionStatus.REJECTED;
-        emit TransactionRejected(txId);
+        rejections[txId][msg.sender] = true;
+        transaction.rejectionCount++;
+
+        if (transaction.rejectionCount >= rejectionThreshold) {
+            transaction.status = TransactionStatus.REJECTED;
+            emit TransactionRejected(txId);
+        }
     }
 
     /// @notice Get transaction details.
@@ -269,6 +296,47 @@ contract MultiSigWallet {
     function hasApproved(uint256 txId, address signer) external view returns (bool) {
         if (txId >= transactionCount) revert TransactionNotFound();
         return approvals[txId][signer];
+    }
+
+    /// @notice Check if a signer has rejected a transaction.
+    /// @param txId The ID of the transaction.
+    /// @param signer The signer address to check.
+    /// @return True if the signer has rejected the transaction.
+    /// @dev Access: No caller-specific access restriction is imposed.
+    /// @dev Reverts: `TransactionNotFound` if `txId >= transactionCount` is true.
+    function hasRejected(uint256 txId, address signer) external view returns (bool) {
+        if (txId >= transactionCount) revert TransactionNotFound();
+        return rejections[txId][signer];
+    }
+
+    /// @notice Get the rejection threshold.
+    /// @return The rejection threshold value.
+    /// @dev Access: No caller-specific access restriction is imposed.
+    function getRejectionThreshold() external view returns (uint256) {
+        return rejectionThreshold;
+    }
+
+    /// @notice Get the rejection count for a transaction.
+    /// @param txId The ID of the transaction.
+    /// @return The number of rejections for the transaction.
+    /// @dev Access: No caller-specific access restriction is imposed.
+    /// @dev Reverts: `TransactionNotFound` if `txId >= transactionCount` is true.
+    function getRejectionCount(uint256 txId) external view returns (uint256) {
+        if (txId >= transactionCount) revert TransactionNotFound();
+        return transactions[txId].rejectionCount;
+    }
+
+    /// @notice Update the rejection threshold.
+    /// @param newRejectionThreshold The new rejection threshold value.
+    /// @dev Access: Caller permissions are checked against the sender or assigned roles.
+    /// @dev Reverts: `NotSigner` if `!isSigner[msg.sender]` is true. `InvalidThreshold` if
+    ///     `newRejectionThreshold == 0 || newRejectionThreshold > signers.length` is true.
+    function updateRejectionThreshold(uint256 newRejectionThreshold) external {
+        if (!isSigner[msg.sender]) revert NotSigner();
+        if (newRejectionThreshold == 0 || newRejectionThreshold > signers.length) revert InvalidThreshold();
+
+        rejectionThreshold = newRejectionThreshold;
+        emit ThresholdUpdated(newRejectionThreshold);
     }
 
     // -------------------------------------------------------------------------
