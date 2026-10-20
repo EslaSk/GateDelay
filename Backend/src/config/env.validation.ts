@@ -93,8 +93,24 @@ export const envValidationSchema = Joi.object({
   DEPLOYMENT_REGISTRY_JSON: Joi.string().allow('').optional(),
   CONTRACT_ABI_EXPECTATIONS_JSON: Joi.string().allow('').optional(),
 
-  WEBHOOK_SECRET: Joi.string().min(16).default('default-secret'),
+  WEBHOOK_SECRET: Joi.string()
+    .min(16)
+    .invalid('default-secret')
+    .when('NODE_ENV', {
+      is: Joi.valid('production', 'staging'),
+      then: Joi.required().messages({
+        'any.required': 'WEBHOOK_SECRET is required in production/staging environments',
+        'any.invalid': 'WEBHOOK_SECRET must not be the default placeholder value',
+        'string.min': 'WEBHOOK_SECRET must be at least 16 characters',
+      }),
+      otherwise: Joi.string().min(16).default('dev-only-webhook-secret'),
+    }),
+  WEBHOOK_SECRET_ROTATION: Joi.string().optional(),
   WEBHOOK_TIMESTAMP_WINDOW_MS: Joi.number().integer().positive().optional(),
+  WEBHOOK_MAX_ATTEMPTS: Joi.number().integer().min(1).max(20).default(5),
+  WEBHOOK_RETRY_BASE_MS: Joi.number().integer().positive().default(2000),
+  WEBHOOK_RETRY_FACTOR: Joi.number().min(1).default(2),
+  WEBHOOK_RETRY_CAP_MS: Joi.number().integer().positive().default(60000),
 
   PINATA_API_KEY: Joi.string().optional(),
   PINATA_SECRET_API_KEY: Joi.string().optional(),

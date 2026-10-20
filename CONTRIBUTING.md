@@ -102,10 +102,26 @@ Without Particle env vars the app may still render, but wallet connection flows 
 ```bash
 npm run dev      # http://localhost:3000 (or next available port)
 npm run build    # production build check
-npm run lint     # ESLint
 ```
 
 Point `NEXT_PUBLIC_API_URL` at the Backend NestJS instance when testing API-integrated pages.
+
+### Quality checks
+
+Run these from `Frontend/` before opening a pull request:
+
+```bash
+npm run lint                 # ESLint
+npm run typecheck            # TypeScript
+npm test                     # Vitest suite
+npm run build                # production build check
+npm run check:staged-source  # reject Markdown fences in staged JS/TS source
+```
+
+The staged-source check reads added, copied, modified, and renamed source files
+from Git's index and reports each Markdown fence with its file and line. Run it
+after staging changes; it does not replace lint, typecheck, or CI. It can also
+be used as a local pre-commit check without installing a Git hook manager.
 
 ---
 

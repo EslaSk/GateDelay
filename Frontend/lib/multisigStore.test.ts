@@ -85,7 +85,7 @@ const VALID_REGISTRY = JSON.stringify({
 
 const VALID_TX_HASH = "0x" + "ab".repeat(32);
 
-async function signDigest(txId: string, wallet: ethers.Wallet): Promise<string> {
+async function signDigest(txId: string, wallet: ethers.Signer): Promise<string> {
   const tx = getTransactionStatus(txId);
   const { domain, types, message } = buildTypedData(tx);
   return wallet.signTypedData(domain, types, message);

@@ -66,7 +66,7 @@ async function bootstrap() {
     }
   }
 
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { rawBody: true });
 
   app.enableCors({ origin: process.env.FRONTEND_URL || '*' });
   app.use(expressCorrelationMiddleware);
@@ -108,6 +108,7 @@ async function bootstrap() {
 
   app.useGlobalPipes(
     new ValidationPipe({
+      transform: true,
       whitelist: true,
       forbidNonWhitelisted: true,
       validationError: { target: false, value: false },

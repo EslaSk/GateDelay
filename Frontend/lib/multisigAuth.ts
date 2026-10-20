@@ -189,7 +189,7 @@ async function verifySessionToken(token: string): Promise<string> {
 
   const sigBytes = hexToBytes(hmac);
   const dataBytes = encoder.encode(address);
-  const valid = await crypto.subtle.verify("HMAC", keyMaterial, sigBytes, dataBytes);
+  const valid = await crypto.subtle.verify("HMAC", keyMaterial, new Uint8Array(sigBytes).buffer, dataBytes);
 
   if (!valid) {
     throw new Error("AUTH: Session token signature is invalid");

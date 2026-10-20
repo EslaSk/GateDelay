@@ -23,6 +23,8 @@
  *  StorageEntry – shape of a stored record
  */
 
+import { createHash } from "node:crypto";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -71,7 +73,7 @@ class MemoryAdapter implements IpfsStorageAdapter {
     entry: Omit<StorageEntry, "hash">,
     suggestedHash?: string
   ): Promise<string> {
-    const hash = suggestedHash ?? generateHash();
+    const hash = suggestedHash ?? generateHash(entry.data);
     this.store.set(hash, { ...entry, hash });
     return hash;
   }
@@ -156,13 +158,46 @@ function resolveGatewayBase(): string {
   return FALLBACK_GATEWAY;
 }
 
-function generateHash(): string {
-  const chars = "abcdefghijklmnopqrstuvwxyz234567";
-  let hash = "Qm";
-  for (let i = 0; i < 44; i++) {
-    hash += chars[Math.floor(Math.random() * chars.length)];
+// ---------------------------------------------------------------------------
+// CID helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * RFC 4648 §6 base32 alphabet (lower-case, no padding).
+ * Used by CIDv1 to produce the familiar "bafy…" prefix.
+ */
+const BASE32_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
+
+/** CIDv0: base58btc encoding of the SHA-256 multihash of the mock payload. */
+function generateHash(data: unknown): string {
+  const digest = createHash("sha256").update(JSON.stringify(data)).digest();
+  const multihash = Buffer.concat([Buffer.from([0x12, 0x20]), digest]);
+  const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  let value = BigInt(`0x${multihash.toString("hex")}`);
+  let result = "";
+  while (value > BigInt(0)) {
+    result = alphabet[Number(value % BigInt(58))] + result;
+    value /= BigInt(58);
   }
-  return hash;
+  return result;
+}
+
+function base32Encode(bytes: Uint8Array): string {
+  let bits = 0;
+  let value = 0;
+  let output = "";
+  for (let i = 0; i < bytes.length; i++) {
+    value = (value << 8) | bytes[i];
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      output += BASE32_ALPHABET[(value >>> bits) & 0x1f];
+    }
+  }
+  if (bits > 0) {
+    output += BASE32_ALPHABET[(value << (5 - bits)) & 0x1f];
+  }
+  return output;
 }
 
 // ---------------------------------------------------------------------------

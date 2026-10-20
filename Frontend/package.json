@@ -14,6 +14,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
+    "check:staged-source": "node scripts/check-staged-source.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:smoke": "playwright test",
