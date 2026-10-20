@@ -73,6 +73,29 @@ describe('AuthService abuse paths', () => {
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
+  it('normalizes email identity across registration, login, and password reset', async () => {
+    const registration = await service.register({
+      email: '  User@Example.COM  ',
+      password: validPassword,
+    });
+
+    expect(registration.user.email).toBe('user@example.com');
+    await expect(
+      service.register({
+        email: 'user@example.com',
+        password: 'AnotherPass2',
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    await expect(
+      service.login({ email: ' USER@example.com ', password: validPassword }),
+    ).resolves.toMatchObject({ user: { email: 'user@example.com' } });
+
+    await service.forgotPassword({ email: ' USER@EXAMPLE.COM ' });
+    const resetOutbox = (service as any).resetOutbox as Map<string, any>;
+    expect([...resetOutbox.values()][0].email).toBe('user@example.com');
+  });
+
   it('uses the same invalid-credentials failure for unknown users and bad passwords', async () => {
     await expect(
       service.login({ email: 'missing@example.com', password: validPassword }),
