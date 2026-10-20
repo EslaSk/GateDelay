@@ -16,6 +16,9 @@ contract MultiSigWallet {
     error DuplicateSigner();
     error SignerNotFound();
     error InvalidTransaction();
+    error NonceAlreadyConsumed();
+    error ProposalExpired();
+    error InvalidSignature();
 
     // -------------------------------------------------------------------------
     // Types
@@ -31,6 +34,8 @@ contract MultiSigWallet {
         TransactionStatus status;
         uint256 createdAt;
         uint256 executedAt;
+        uint256 nonce;
+        uint256 expiry;
     }
 
     // -------------------------------------------------------------------------
@@ -43,6 +48,24 @@ contract MultiSigWallet {
     event TransactionApproved(uint256 indexed txId, address indexed signer);
     event TransactionExecuted(uint256 indexed txId, address indexed executor);
     event TransactionRejected(uint256 indexed txId);
+
+    // -------------------------------------------------------------------------
+    // EIP-712 Typed Data Constants & Nonce Tracking (#1198)
+    // -------------------------------------------------------------------------
+    string public constant DOMAIN_NAME = "GateDelay MultiSig";
+    string public constant DOMAIN_VERSION = "1";
+
+    bytes32 public constant DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+
+    bytes32 public constant MULTISIG_APPROVAL_TYPEHASH =
+        keccak256(
+            "MultisigApproval(uint256 chainId,address walletAddress,uint256 nonce,address target,uint256 value,bytes32 calldataHash,uint256 expiry)"
+        );
+
+    mapping(uint256 => bool) public consumedNonces;
+    mapping(uint256 => uint256) private nonceTransactionIds;
+    uint256 public nextNonce;
 
     // -------------------------------------------------------------------------
     // Storage
@@ -142,8 +165,24 @@ contract MultiSigWallet {
         external
         returns (uint256 txId)
     {
+        return _createTransaction(target, value, data, block.timestamp + 1 hours);
+    }
+
+    /// @notice Create a transaction with an explicit expiry for EIP-712 approvals.
+    function createTransaction(address target, uint256 value, bytes calldata data, uint256 expiry)
+        external
+        returns (uint256 txId)
+    {
+        return _createTransaction(target, value, data, expiry);
+    }
+
+    function _createTransaction(address target, uint256 value, bytes calldata data, uint256 expiry)
+        private
+        returns (uint256 txId)
+    {
         if (!isSigner[msg.sender]) revert NotSigner();
         if (target == address(0)) revert InvalidTransaction();
+        if (expiry <= block.timestamp) revert ProposalExpired();
 
         txId = transactionCount++;
 
@@ -155,7 +194,9 @@ contract MultiSigWallet {
             approvalCount: 0,
             status: TransactionStatus.PENDING,
             createdAt: block.timestamp,
-            executedAt: 0
+            executedAt: 0,
+            nonce: nextNonce++,
+            expiry: expiry
         });
 
         emit TransactionCreated(txId, msg.sender, target);
@@ -174,7 +215,10 @@ contract MultiSigWallet {
 
         Transaction storage transaction = transactions[txId];
         if (transaction.status != TransactionStatus.PENDING) revert InvalidTransaction();
+        if (block.timestamp > transaction.expiry) revert ProposalExpired();
         if (approvals[txId][msg.sender]) revert InvalidTransaction();
+
+        _consumeNonce(transaction.nonce, txId);
 
         approvals[txId][msg.sender] = true;
         transaction.approvalCount++;
@@ -184,6 +228,58 @@ contract MultiSigWallet {
         }
 
         emit TransactionApproved(txId, msg.sender);
+    }
+
+    /// @notice Approve a stored transaction using an EIP-712 owner signature.
+    function approveTransactionWithSignature(uint256 txId, address signer, bytes calldata signature) external {
+        if (txId >= transactionCount) revert TransactionNotFound();
+        Transaction storage transaction = transactions[txId];
+        if (transaction.status != TransactionStatus.PENDING) revert InvalidTransaction();
+        if (block.timestamp > transaction.expiry) revert ProposalExpired();
+        if (!isSigner[signer]) revert NotSigner();
+        if (approvals[txId][signer]) revert DuplicateSigner();
+
+        bytes32 digest = getApprovalDigest(
+            transaction.nonce,
+            transaction.target,
+            transaction.value,
+            keccak256(transaction.data),
+            transaction.expiry
+        );
+        if (_recover(digest, signature) != signer) revert InvalidSignature();
+        _consumeNonce(transaction.nonce, txId);
+        _recordApproval(txId, signer);
+    }
+
+    function _recordApproval(uint256 txId, address signer) private {
+        Transaction storage transaction = transactions[txId];
+        approvals[txId][signer] = true;
+        transaction.approvalCount++;
+        if (transaction.approvalCount >= threshold) transaction.status = TransactionStatus.APPROVED;
+        emit TransactionApproved(txId, signer);
+    }
+
+    function _consumeNonce(uint256 nonce, uint256 txId) private {
+        if (consumedNonces[nonce] && nonceTransactionIds[nonce] != txId + 1) revert NonceAlreadyConsumed();
+        consumedNonces[nonce] = true;
+        nonceTransactionIds[nonce] = txId + 1;
+    }
+
+    function _recover(bytes32 digest, bytes calldata signature) private pure returns (address) {
+        if (signature.length != 65) revert InvalidSignature();
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+        assembly {
+            r := calldataload(signature.offset)
+            s := calldataload(add(signature.offset, 32))
+            v := byte(0, calldataload(add(signature.offset, 64)))
+        }
+        if (v < 27) v += 27;
+        if (v != 27 && v != 28) revert InvalidSignature();
+        address recovered = ecrecover(digest, v, r, s);
+        if (recovered == address(0)) revert InvalidSignature();
+        return recovered;
     }
 
     /// @notice Execute an approved transaction.
@@ -200,6 +296,7 @@ contract MultiSigWallet {
 
         Transaction storage transaction = transactions[txId];
         if (transaction.status != TransactionStatus.APPROVED) revert InsufficientApprovals();
+        if (block.timestamp > transaction.expiry) revert ProposalExpired();
         if (transaction.executedAt != 0) revert TransactionAlreadyExecuted();
 
         transaction.status = TransactionStatus.EXECUTED;
@@ -269,6 +366,51 @@ contract MultiSigWallet {
     function hasApproved(uint256 txId, address signer) external view returns (bool) {
         if (txId >= transactionCount) revert TransactionNotFound();
         return approvals[txId][signer];
+    }
+
+    // -------------------------------------------------------------------------
+    // EIP-712 Helpers (#1198)
+    // -------------------------------------------------------------------------
+
+    /// @notice Returns the EIP-712 domain separator for this wallet.
+    function domainSeparator() public view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                DOMAIN_TYPEHASH,
+                keccak256(bytes(DOMAIN_NAME)),
+                keccak256(bytes(DOMAIN_VERSION)),
+                block.chainid,
+                address(this)
+            )
+        );
+    }
+
+    /// @notice Computes the EIP-712 digest for a multisig approval.
+    function getApprovalDigest(
+        uint256 nonce,
+        address target,
+        uint256 value,
+        bytes32 calldataHash,
+        uint256 expiry
+    ) public view returns (bytes32) {
+        bytes32 structHash = keccak256(
+            abi.encode(
+                MULTISIG_APPROVAL_TYPEHASH,
+                block.chainid,
+                address(this),
+                nonce,
+                target,
+                value,
+                calldataHash,
+                expiry
+            )
+        );
+        return keccak256(abi.encodePacked("\x19\x01", domainSeparator(), structHash));
+    }
+
+    /// @notice Check if a nonce has already been consumed.
+    function isNonceConsumed(uint256 nonce) external view returns (bool) {
+        return consumedNonces[nonce];
     }
 
     // -------------------------------------------------------------------------

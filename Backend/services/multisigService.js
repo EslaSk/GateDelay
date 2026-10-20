@@ -8,8 +8,8 @@ const { ethers } = require('ethers');
  *  - Wallet registry (MULTISIG_WALLETS) and the pending-transaction store are both in-memory
  *    mocks; nothing here is persisted or broadcast on-chain yet. `processTransaction` is a
  *    stand-in for a future on-chain execution step.
- *  - Authorization is signature-based: `collectSignature` recovers the signer address from
- *    `signature` over the transaction id via `ethers.verifyMessage` (EIP-191 personal_sign)
+ *  - Authorization is signature-based: `collectSignature` recovers the signer from canonical
+ *    EIP-712 typed data bound to chain, wallet, nonce, call target/value/calldata, and expiry.
  *    and requires it to match the claimed `owner`, who must in turn be a configured owner of
  *    the target wallet. A caller can no longer claim to be an owner by name alone — they must
  *    hold that owner's private key.
@@ -25,6 +25,9 @@ const { ethers } = require('ethers');
 
 // In-memory store for pending transactions (In production, this would be in MongoDB)
 const pendingTransactions = new Map();
+const walletNonces = new Map();
+const consumedApprovalNonces = new Map();
+const DEFAULT_EXPIRY_SECONDS = 60 * 60;
 
 // Mock owner keys — non-secret, deterministic test keys (never used on any real chain)
 // used only so the mock registry's owner addresses correspond to keys the test suite
@@ -204,14 +207,26 @@ async function proposeTransaction(walletId, txData, proposer, nonce, timestamp, 
     throw new Error('Proposer is not an owner of this multisig');
   }
 
-  // Verify replay protection
-  const payload = { walletId, txData, proposer };
-  const replayResult = verifyReplayProtection(nonce, timestamp, signature, proposer, payload);
-  if (!replayResult.valid) {
-    throw new Error(`Replay protection failed: ${replayResult.error}`);
+  // Preserve optional request-proof replay protection for callers that provide it.
+  if (nonce !== undefined || timestamp !== undefined || signature !== undefined) {
+    const payload = { walletId, txData, proposer };
+    const replayResult = verifyReplayProtection(nonce, timestamp, signature, proposer, payload);
+    if (!replayResult.valid) throw new Error(`Replay protection failed: ${replayResult.error}`);
   }
 
   const txId = ethers.id(JSON.stringify(txData) + Date.now());
+
+  const boundChainId = Number.isSafeInteger(txData.chainId) && txData.chainId > 0 ? txData.chainId : 1;
+  const boundWalletAddress = wallet.address;
+  const target = ethers.getAddress(typeof txData.target === 'string' ? txData.target : wallet.address);
+  const value = String(txData.value ?? '0');
+  if (!/^\d+$/.test(value)) throw new Error('Transaction value must be a non-negative integer in wei');
+  const calldata = typeof txData.data === 'string' ? txData.data : '0x';
+  if (!ethers.isHexString(calldata)) throw new Error('Transaction calldata must be hex data');
+  const calldataHash = ethers.keccak256(calldata);
+  const approvalNonce = walletNonces.get(boundWalletAddress.toLowerCase()) || 0;
+  walletNonces.set(boundWalletAddress.toLowerCase(), approvalNonce + 1);
+  const expiry = Math.floor(Date.now() / 1000) + DEFAULT_EXPIRY_SECONDS;
 
   pendingTransactions.set(txId, {
     id: txId,
@@ -221,16 +236,24 @@ async function proposeTransaction(walletId, txData, proposer, nonce, timestamp, 
     signatures: [],
     status: 'Pending',
     createdAt: new Date().toISOString(),
-    nonce, // Store nonce for reference
-    timestamp // Store timestamp for reference
+    nonce: approvalNonce,
+    timestamp,
+    chainId: boundChainId,
+    walletAddress: boundWalletAddress,
+    target,
+    value,
+    calldata,
+    calldataHash,
+    expiry
   });
 
   return txId;
 }
 
 /**
- * Collect signature for a pending transaction. The signer's address is recovered from
- * `signature` (over `txId`, EIP-191 personal_sign) and must match `owner`; a caller cannot
+ * Collect signature for a pending transaction. The signer is recovered from the canonical
+ * EIP-712 approval data, which binds the complete call and replay domain.
+ * A caller cannot
  * satisfy this by supplying an arbitrary string as `signature`.
  * @param {string} txId
  * @param {string} owner
@@ -253,19 +276,21 @@ async function collectSignature(txId, owner, signature, nonce, timestamp, signSi
     throw new Error('Signer is not an owner of this multisig');
   }
 
-  let recovered;
-  try {
-    recovered = ethers.verifyMessage(txId, signature);
-  } catch {
-    throw new Error('Invalid signature');
-  }
-
-  if (recovered !== normalizedOwner) {
-    throw new Error('Signature does not match owner');
-  }
-
   if (tx.signatures.find(s => s.owner === normalizedOwner)) {
     throw new Error('Owner has already signed this transaction');
+  }
+
+  if (Math.floor(Date.now() / 1000) > tx.expiry) throw new Error('Transaction proposal has expired');
+  const consumed = consumedApprovalNonces.get(tx.walletAddress.toLowerCase());
+  if (tx.signatures.length === 0 && consumed?.has(tx.nonce)) {
+    throw new Error('Nonce already consumed: this transaction cannot be authorized');
+  }
+  const { domain, types, message } = buildTypedData(tx);
+  verifyTypedDataSignature(domain, types, message, signature, normalizedOwner);
+  if (tx.signatures.length === 0) {
+    const walletConsumed = consumed || new Set();
+    walletConsumed.add(tx.nonce);
+    consumedApprovalNonces.set(tx.walletAddress.toLowerCase(), walletConsumed);
   }
 
   tx.signatures.push({ owner: normalizedOwner, signature, timestamp: new Date().toISOString() });
@@ -288,6 +313,8 @@ async function processTransaction(txId, executor) {
   if (!tx) throw new Error('Transaction not found');
 
   const wallet = getWallet(tx.walletId);
+
+  if (Math.floor(Date.now() / 1000) > tx.expiry) throw new Error('Transaction proposal has expired');
 
   if (executor !== undefined) {
     let normalizedExecutor;
@@ -331,7 +358,116 @@ function getTransactionStatus(txId) {
   return tx;
 }
 
+// ---------------------------------------------------------------------------
+// #1198 – EIP-712 typed-data constants and helpers
+// ---------------------------------------------------------------------------
+
+const MULTISIG_DOMAIN_NAME = 'GateDelay MultiSig';
+const MULTISIG_DOMAIN_VERSION = '1';
+
+/** EIP-712 type definition for a multisig approval. */
+const MULTISIG_APPROVAL_TYPES = {
+  MultisigApproval: [
+    { name: 'chainId', type: 'uint256' },
+    { name: 'walletAddress', type: 'address' },
+    { name: 'nonce', type: 'uint256' },
+    { name: 'target', type: 'address' },
+    { name: 'value', type: 'uint256' },
+    { name: 'calldataHash', type: 'bytes32' },
+    { name: 'expiry', type: 'uint256' },
+  ],
+};
+
+/**
+ * Build EIP-712 domain separator for a multisig transaction.
+ * @param {object} tx
+ * @returns {object}
+ */
+function buildDomain(tx) {
+  const wallet = MULTISIG_WALLETS[tx.walletId];
+  return {
+    name: MULTISIG_DOMAIN_NAME,
+    version: MULTISIG_DOMAIN_VERSION,
+    chainId: tx.chainId,
+    verifyingContract: tx.walletAddress || (wallet ? wallet.address : tx.target),
+  };
+}
+
+/**
+ * Build EIP-712 message for a multisig transaction.
+ * @param {object} tx
+ * @returns {object}
+ */
+function buildMessage(tx) {
+  const wallet = MULTISIG_WALLETS[tx.walletId];
+  return {
+    chainId: tx.chainId,
+    walletAddress: tx.walletAddress || (wallet ? wallet.address : tx.target),
+    nonce: tx.nonce !== undefined ? tx.nonce : 0,
+    target: tx.target || (wallet ? wallet.address : ethers.ZeroAddress),
+    value: tx.value ? String(tx.value) : '0',
+    calldataHash: tx.calldataHash || ethers.keccak256('0x'),
+    expiry: tx.expiry !== undefined ? tx.expiry : 0,
+  };
+}
+
+/**
+ * Return the full EIP-712 typed-data object for a transaction.
+ * @param {object} tx
+ * @returns {object}
+ */
+function buildTypedData(tx) {
+  return {
+    domain: buildDomain(tx),
+    types: MULTISIG_APPROVAL_TYPES,
+    message: buildMessage(tx),
+  };
+}
+
+/**
+ * Compute the EIP-712 hash of the typed data for a transaction.
+ * @param {object} tx
+ * @returns {string}
+ */
+function buildTypedDataHash(tx) {
+  const { domain, types, message } = buildTypedData(tx);
+  return ethers.TypedDataEncoder.hash(domain, types, message);
+}
+
+/**
+ * Verify an EIP-712 typed-data signature against expectedOwner.
+ * @param {object} domain
+ * @param {object} types
+ * @param {object} message
+ * @param {string} signature
+ * @param {string} expectedOwner
+ */
+function verifyTypedDataSignature(domain, types, message, signature, expectedOwner) {
+  if (typeof signature !== 'string' || !/^0x[0-9a-fA-F]{130}$/.test(signature)) {
+    throw new Error('Invalid signature format: expected a 65-byte (130 hex char) EIP-712 signature');
+  }
+
+  let recovered;
+  try {
+    recovered = ethers.verifyTypedData(domain, types, message, signature);
+  } catch {
+    throw new Error('Signature recovery failed: malformed or invalid signature');
+  }
+
+  if (recovered.toLowerCase() !== expectedOwner.toLowerCase()) {
+    throw new Error(`Signature verification failed: recovered ${recovered} but expected ${expectedOwner}`);
+  }
+}
+
 module.exports = {
+  MULTISIG_DOMAIN_NAME,
+  MULTISIG_DOMAIN_VERSION,
+  MULTISIG_APPROVAL_TYPES,
+  buildDomain,
+  buildMessage,
+  buildTypedData,
+  buildTypedDataHash,
+  verifyTypedDataSignature,
   getWallet,
   isOwner,
   proposeTransaction,
