@@ -76,11 +76,15 @@ export class WebhookEventRecord {
 
   /**
    * Deduplication key.
-   * Derived as: `${payload.marketId}:${signedTimestamp}`.
+   * Derived as: `provider:${providerEventId}`.
    * Unique index prevents the same sender delivery from being ingested twice.
    */
   @Prop({ required: true, unique: true })
   deduplicationKey: string;
+
+  /** Stable provider ID, retained across repeated deliveries and restarts. */
+  @Prop()
+  providerEventId?: string;
 
   /** The payload as it arrived — immutable after ingress */
   @Prop({ required: true, type: Object })

@@ -6,15 +6,15 @@ import {
   Req,
   BadRequestException,
 } from '@nestjs/common';
-import { Request } from 'express';
+import type { RawBodyRequest } from '@nestjs/common';
+import type { Request } from 'express';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { WebhookService } from './webhook.service';
 
 /**
  * BE-017: Signature verification uses the original raw request bytes, not
- * re-serialised JSON. Raw bytes are captured by WebhookRawBodyMiddleware
- * (registered in WebhooksModule) and stored on req.rawBody before the
- * global JSON body-parser runs.
+ * re-serialised JSON. Nest captures the original bytes on req.rawBody when
+ * the application starts with rawBody: true.
  */
 @ApiTags('webhooks')
 @Controller('webhooks')
@@ -33,9 +33,9 @@ export class WebhookController {
    * the WebhookPayload fields (for providers that don't support custom headers).
    */
   @Post('market-creation')
-  async handleMarketCreationWebhook(@Req() req: Request) {
-    // BE-017: use raw bytes when captured by the middleware
-    const rawBody: Buffer | undefined = (req as any).rawBody;
+  async handleMarketCreationWebhook(@Req() req: RawBodyRequest<Request>) {
+    // BE-017: use the original bytes captured by Nest's body parser.
+    const rawBody: Buffer | undefined = req.rawBody;
 
     const signature: string =
       (req.headers['x-webhook-signature'] as string) ||
@@ -59,38 +59,14 @@ export class WebhookController {
           'must be supplied via headers (x-webhook-signature, x-webhook-timestamp, ' +
           'x-provider-event-id) or body fields.',
       );
-   * Ingest a new webhook event.
-   *
-   * The signature and sender timestamp are validated here — exactly once.
-   * The event is persisted as verified and scheduled for immediate processing.
-   */
-  @Post('market-creation')
-  @ApiOperation({ summary: 'Ingest a market-creation webhook event' })
-  @ApiResponse({ status: 200, description: 'Event accepted and queued' })
-  @ApiResponse({ status: 400, description: 'Invalid signature, expired timestamp, or bad payload' })
-  async handleMarketCreationWebhook(
-    @Body()
-    body: {
-      payload: WebhookPayload;
-      signature: string;
-      timestamp: string;
-    },
-  ) {
-    if (!body.payload || !body.signature || !body.timestamp) {
-      throw new BadRequestException('Missing payload, signature, or timestamp');
     }
 
-    // BE-017: use raw bytes when available; fall back to re-serialised body
-    // only in non-production for backward-compatible smoke testing.
-    let bodyBuffer: Buffer;
-    if (rawBody && rawBody.length > 0) {
-      bodyBuffer = rawBody;
-    } else {
-      bodyBuffer = Buffer.from(JSON.stringify(req.body), 'utf8');
+    if (!rawBody || rawBody.length === 0) {
+      throw new BadRequestException('Raw webhook body is required');
     }
 
     return this.webhookService.processWebhook(
-      bodyBuffer,
+      rawBody,
       signature,
       timestamp,
       providerEventId,
@@ -137,7 +113,7 @@ export class WebhookController {
    *
    * Bypasses the original sender timestamp — the stored verified payload is
    * used directly.  The event must carry `verified: true` to be retried.
-   * Dead-lettered events are reset and re-queued.
+   * Dead-lettered events retain their attempt counts and cannot be re-queued.
    */
   @Post('retry/:eventId')
   @ApiOperation({ summary: 'Manually retry a webhook event' })

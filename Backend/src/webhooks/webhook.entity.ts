@@ -32,7 +32,6 @@ export interface WebhookEvent {
   signature: string;
   signedTimestamp: string;
   timestamp: Date;
-  status: 'pending' | 'processed' | 'failed';
 
   /** Monotonically increasing attempt count — never reset on retry (BE-019). */
   retryCount: number;
@@ -46,7 +45,6 @@ export interface WebhookEvent {
   }>;
 
   status: 'pending' | 'processing' | 'processed' | 'failed' | 'dead_letter';
-  retryCount: number;
   maxRetries: number;
   lastError?: string;
   /** Present once a market was successfully created */
@@ -67,7 +65,6 @@ export interface WebhookAttemptRecord {
 export interface WebhookStatus {
   eventId: string;
   providerEventId: string;
-  status: 'pending' | 'processed' | 'failed';
   status: 'pending' | 'processing' | 'processed' | 'failed' | 'dead_letter';
   marketId: string;
   resultMarketId?: string;
