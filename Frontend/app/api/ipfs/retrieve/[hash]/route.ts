@@ -15,6 +15,9 @@ export async function GET(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
-    return NextResponse.json({ success: false, error: message, code: "IPFS_ERROR" }, { status: 400 });
+    return NextResponse.json(
+      { success: false, error: message, code: "IPFS_ERROR" },
+      { status: 400 },
+    );
   }
 }

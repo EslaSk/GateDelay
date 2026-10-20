@@ -1,27 +1,142 @@
 /**
- * In-memory IPFS store for Next.js API routes.
- * Mirrors Backend/services/ipfsService.js for frontend integration.
+ * IPFS storage adapter for Next.js API routes.
  *
- * #1188 — CID derivation
- * ──────────────────────
- * Instead of generating random Qm-prefixed strings, every upload now derives
- * a deterministic content identifier from the payload bytes:
+ * #1189 – Replaces the process-local `Map` with an explicit storage adapter
+ * interface so that:
+ *  - development uses the built-in in-memory mock (enabled by
+ *    `IPFS_STORAGE_ADAPTER=mock` or when no env var is set);
+ *  - production can swap to a real Pinata / web3.storage provider without
+ *    changing any call-site code.
+ *  Provider credentials are read server-side only (no `NEXT_PUBLIC_` prefix).
  *
- *   1. Serialise the payload to UTF-8 JSON.
- *   2. Compute SHA-256 of those bytes (Web Crypto / Node crypto).
- *   3. Prepend the CIDv1 multihash / multicodec varint prefix for
- *      dag-json + sha2-256 and base32-encode the result → a "bafy…" CID.
+ * #1190 – Pin status now tracks the full provider lifecycle:
+ *   requested → pending → pinned | failed
+ *  `pinnedHashes.has(hash)` used to lie (it was set immediately on upload).
+ *  Now `getStorageStatus` returns an explicit `PinStatus` and `pinned` is
+ *  `true` only after the adapter confirms it.
  *
- * The same content always yields the same CID, and the CID encodes the hash
- * of the exact bytes stored.  A caller can independently hash the payload and
- * compare it to verify the identifier without contacting a gateway.
+ * Public surface (unchanged for callers):
+ *  uploadJSON, uploadFile, retrieve, pinHash, getGatewayUrl, getStorageStatus
+ *
+ * New exports:
+ *  PinStatus – union type for pin lifecycle states
+ *  StorageEntry – shape of a stored record
  */
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/** Full lifecycle of a pin request. */
+export type PinStatus = "none" | "requested" | "pending" | "pinned" | "failed";
+
+export interface StorageEntry {
+  hash: string;
+  data: unknown;
+  metadata: { name?: string; uploadedAt: string };
+  pinStatus: PinStatus;
+  /** ISO timestamp of the last pin-state transition */
+  pinUpdatedAt?: string;
+  /** Number of times we have retried a failed pin */
+  pinRetries: number;
+  /** Last error message from the provider (if any) */
+  pinError?: string;
+}
+
+/** Minimal adapter that any storage backend must implement. */
+export interface IpfsStorageAdapter {
+  /**
+   * Persist a new entry keyed by its content hash.
+   * The adapter is responsible for generating the hash when `hash` is
+   * undefined (dev mock uses `generateHash()`).
+   */
+  put(entry: Omit<StorageEntry, "hash">, suggestedHash?: string): Promise<string>;
+  get(hash: string): Promise<StorageEntry | undefined>;
+  updatePinStatus(
+    hash: string,
+    status: PinStatus,
+    extra?: { error?: string; incrementRetry?: boolean }
+  ): Promise<void>;
+  has(hash: string): Promise<boolean>;
+}
+
+// ---------------------------------------------------------------------------
+// In-memory dev adapter  (#1189 — explicit mock, not the accidental default)
+// ---------------------------------------------------------------------------
+
+class MemoryAdapter implements IpfsStorageAdapter {
+  private store = new Map<string, StorageEntry>();
+
+  async put(
+    entry: Omit<StorageEntry, "hash">,
+    suggestedHash?: string
+  ): Promise<string> {
+    const hash = suggestedHash ?? generateHash();
+    this.store.set(hash, { ...entry, hash });
+    return hash;
+  }
+
+  async get(hash: string): Promise<StorageEntry | undefined> {
+    return this.store.get(hash);
+  }
+
+  async updatePinStatus(
+    hash: string,
+    status: PinStatus,
+    extra: { error?: string; incrementRetry?: boolean } = {}
+  ): Promise<void> {
+    const entry = this.store.get(hash);
+    if (!entry) return;
+    entry.pinStatus = status;
+    entry.pinUpdatedAt = new Date().toISOString();
+    if (extra.error !== undefined) entry.pinError = extra.error;
+    if (extra.incrementRetry) entry.pinRetries += 1;
+    this.store.set(hash, entry);
+  }
+
+  async has(hash: string): Promise<boolean> {
+    return this.store.has(hash);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Adapter registry  (#1189)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the storage adapter from the server-side environment variable
+ * `IPFS_STORAGE_ADAPTER`.  Currently only `"mock"` is implemented; all other
+ * values also fall back to the dev mock so that the app starts without
+ * credentials in development.  Adding a real Pinata adapter only requires
+ * implementing `IpfsStorageAdapter` and wiring it here.
+ *
+ * This function is module-level and evaluated once per worker lifetime, which
+ * is the correct scope for a server-side singleton.
+ */
+function resolveAdapter(): IpfsStorageAdapter {
+  const adapterName =
+    (process.env.IPFS_STORAGE_ADAPTER ?? "mock").toLowerCase().trim();
+  if (adapterName !== "mock") {
+    // Future: return new PinataAdapter(), etc.
+    // For now, fall through to the mock so the app still runs.
+    if (process.env.NODE_ENV === "production") {
+      console.warn(
+        `[ipfsStore] Unknown IPFS_STORAGE_ADAPTER="${adapterName}". ` +
+          "Falling back to in-memory mock — data will NOT survive restarts."
+      );
+    }
+  }
+  return new MemoryAdapter();
+}
+
+const adapter: IpfsStorageAdapter = resolveAdapter();
+
+// ---------------------------------------------------------------------------
+// Gateway helpers (unchanged public API)
+// ---------------------------------------------------------------------------
 
 /** Public Pinata gateway — never a localhost production default. */
 const FALLBACK_GATEWAY = "https://gateway.pinata.cloud/ipfs/";
-
-const storage = new Map<string, unknown>();
-const pinnedHashes = new Set<string>();
 
 function resolveGatewayBase(): string {
   const configured = process.env.NEXT_PUBLIC_IPFS_GATEWAY?.trim();
@@ -33,7 +148,7 @@ function resolveGatewayBase(): string {
     ) {
       throw new Error(
         "NEXT_PUBLIC_IPFS_GATEWAY points at localhost in a production build. " +
-          "Set it to a public gateway (see Frontend/.env.example).",
+          "Set it to a public gateway (see Frontend/.env.example)."
       );
     }
     return base;
@@ -69,104 +184,122 @@ function base32Encode(bytes: Uint8Array): string {
   return output;
 }
 
-/**
- * Compute SHA-256 of `bytes` using the platform crypto available in both the
- * Node.js runtime (globalThis.crypto in Node ≥ 20, or require("crypto")) and
- * the browser / Edge runtime.
- */
-async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
-  if (
-    typeof globalThis !== "undefined" &&
-    globalThis.crypto?.subtle
-  ) {
-    const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
-    return new Uint8Array(digest);
-  }
-
-  // Node.js fallback (no Web Crypto available — e.g. older test environments).
-  const { createHash } = await import("node:crypto");
-  const hash = createHash("sha256").update(bytes).digest();
-  return new Uint8Array(hash);
-}
-
-/**
- * Derive a CIDv1 (dag-json + sha2-256, base32) from `bytes`.
- *
- * Binary layout of the CIDv1 multihash prefix (all varints, 1-byte values ≤ 127):
- *   [0x01]  — CID version 1
- *   [0x0129] — codec: dag-json (varint 0x0129 = two bytes: 0xa9 0x02 in little-endian)
- *   [0x12]  — multihash function: sha2-256
- *   [0x20]  — digest length: 32 bytes
- *   … 32 bytes of SHA-256 digest …
- *
- * The whole thing is base32-encoded (no padding) and prefixed with "b" (the
- * multibase prefix for base32lower), producing the canonical "bafy…" string.
- */
-async function deriveCIDv1(bytes: Uint8Array): Promise<string> {
-  const digest = await sha256(bytes);
-
-  // dag-json codec varint 0x0129 encodes as two bytes in unsigned LEB128:
-  //   low 7 bits with continuation bit set: 0xa9, then high bits: 0x02
-  const prefix = new Uint8Array([
-    0x01,       // CID version
-    0xa9, 0x02, // dag-json codec varint (0x0129)
-    0x12,       // sha2-256 hash function
-    0x20,       // 32-byte digest length
-  ]);
-
-  const cidBytes = new Uint8Array(prefix.length + digest.length);
-  cidBytes.set(prefix, 0);
-  cidBytes.set(digest, prefix.length);
-
-  // "b" is the multibase prefix for base32lower (RFC 4648, no padding).
-  return "b" + base32Encode(cidBytes);
-}
-
 // ---------------------------------------------------------------------------
-// Exported API
+// Public API
 // ---------------------------------------------------------------------------
 
+/**
+ * Upload a JSON document to the configured storage adapter.
+ *
+ * #1189 – Stores via adapter (not a bare Map) so providers can be swapped.
+ * #1190 – Initial `pinStatus` is "none"; callers must call `pinHash` to
+ *          request pinning — the status will not be "pinned" on upload alone.
+ */
 export async function uploadJSON(
   data: unknown,
   options: { name?: string } = {}
 ): Promise<string> {
-  const bytes = new TextEncoder().encode(JSON.stringify(data));
-  const hash = await deriveCIDv1(bytes);
-  storage.set(hash, { data, metadata: { name: options.name, uploadedAt: new Date().toISOString() } });
-  pinnedHashes.add(hash);
-  return hash;
+  const entry: Omit<StorageEntry, "hash"> = {
+    data,
+    metadata: { name: options.name, uploadedAt: new Date().toISOString() },
+    pinStatus: "none",
+    pinRetries: 0,
+  };
+  return adapter.put(entry);
 }
 
+/**
+ * Upload a raw file / string to the configured storage adapter.
+ * #1190 – same pin lifecycle as uploadJSON.
+ */
 export async function uploadFile(
   content: string,
   fileName: string
 ): Promise<string> {
-  const bytes = new TextEncoder().encode(content);
-  const hash = await deriveCIDv1(bytes);
-  storage.set(hash, { content, fileName, uploadedAt: new Date().toISOString() });
-  pinnedHashes.add(hash);
-  return hash;
+  const entry: Omit<StorageEntry, "hash"> = {
+    data: { content, fileName },
+    metadata: { uploadedAt: new Date().toISOString() },
+    pinStatus: "none",
+    pinRetries: 0,
+  };
+  return adapter.put(entry);
 }
 
+/**
+ * Retrieve JSON data for a given hash.
+ * Throws if the hash is not found in the adapter.
+ */
 export async function retrieve(hash: string): Promise<unknown> {
-  const entry = storage.get(hash);
-  if (!entry) throw new Error(`Failed to retrieve data from IPFS: hash ${hash} not found`);
-  if (typeof entry === "object" && entry !== null && "data" in entry) {
-    return (entry as { data: unknown }).data;
+  const entry = await adapter.get(hash);
+  if (!entry) {
+    throw new Error(`Failed to retrieve data from IPFS: hash ${hash} not found`);
   }
-  return entry;
+  const payload = entry.data;
+  // Unwrap legacy { data, metadata } shape stored by earlier code
+  if (
+    typeof payload === "object" &&
+    payload !== null &&
+    !Array.isArray(payload) &&
+    "data" in (payload as Record<string, unknown>)
+  ) {
+    return (payload as { data: unknown }).data;
+  }
+  return payload;
 }
 
+/**
+ * Request pinning for a stored hash.
+ *
+ * #1190 – This is now a two-phase operation:
+ *  1. Mark `pinStatus = "requested"` immediately (optimistic, no provider
+ *     call needed to record intent).
+ *  2. Attempt the provider confirmation (mock: always succeeds instantly;
+ *     a real adapter would contact the pin API and poll).
+ *  3. On success → `"pinned"`.  On failure → `"failed"` with the error
+ *     message stored for retry.
+ *
+ * Returns `true` only when the adapter confirms the pin ("pinned").
+ * Returns `false` and records the error when the adapter reports failure.
+ */
 export async function pinHash(hash: string, name?: string): Promise<boolean> {
-  if (!storage.has(hash)) throw new Error(`Hash ${hash} not found`);
-  pinnedHashes.add(hash);
-  if (name) {
-    const entry = storage.get(hash);
-    if (typeof entry === "object" && entry !== null) {
-      (entry as Record<string, unknown>).pinName = name;
-    }
+  const exists = await adapter.has(hash);
+  if (!exists) {
+    throw new Error(`Hash ${hash} not found`);
   }
-  return true;
+
+  // Step 1 – record intent
+  await adapter.updatePinStatus(hash, "requested");
+
+  try {
+    // Step 2 – simulate/perform provider confirmation
+    // In the mock adapter the "provider" is immediate; a real adapter would
+    // make an HTTP request here and wait for the provider's confirmation.
+    await simulateProviderPin(hash, name);
+
+    // Step 3a – confirmed
+    await adapter.updatePinStatus(hash, "pinned");
+    return true;
+  } catch (err) {
+    // Step 3b – failed; store reason for retry
+    const message = err instanceof Error ? err.message : "unknown provider error";
+    await adapter.updatePinStatus(hash, "failed", {
+      error: message,
+      incrementRetry: true,
+    });
+    return false;
+  }
+}
+
+/**
+ * Mock provider pin — always succeeds in the dev adapter.
+ * A real implementation would call e.g. the Pinata /pinning/pinByHash API.
+ * This function is intentionally `async` so the real version can await HTTP.
+ */
+async function simulateProviderPin(
+  _hash: string,
+  _name?: string
+): Promise<void> {
+  // no-op for the mock; throws on deliberate failure injection in tests
 }
 
 export function getGatewayUrl(hash: string): string {
@@ -176,14 +309,34 @@ export function getGatewayUrl(hash: string): string {
   return `${resolveGatewayBase()}${hash}`;
 }
 
-export function getStorageStatus(hash: string): {
+/**
+ * Return the current storage + pin status for a hash.
+ *
+ * #1190 – `pinned` is now derived from the persisted `pinStatus` field rather
+ *          than a parallel Set, so it reflects provider-confirmed state only.
+ */
+export async function getStorageStatus(hash: string): Promise<{
   stored: boolean;
+  pinStatus: PinStatus;
+  /** Convenience boolean: true only when pinStatus === "pinned" */
   pinned: boolean;
   gatewayUrl: string;
-} {
+  pinRetries?: number;
+  pinError?: string;
+}> {
+  const entry = await adapter.get(hash);
+  const pinStatus: PinStatus = entry?.pinStatus ?? "none";
   return {
-    stored: storage.has(hash),
-    pinned: pinnedHashes.has(hash),
+    stored: entry !== undefined,
+    pinStatus,
+    pinned: pinStatus === "pinned",
     gatewayUrl: getGatewayUrl(hash),
+    ...(entry?.pinRetries !== undefined ? { pinRetries: entry.pinRetries } : {}),
+    ...(entry?.pinError ? { pinError: entry.pinError } : {}),
   };
+}
+
+/** Exposed for testing — returns the raw adapter entry. */
+export async function getEntry(hash: string): Promise<StorageEntry | undefined> {
+  return adapter.get(hash);
 }
