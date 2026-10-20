@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {PositionToken} from "./PositionToken.sol";
+import {PredictionMarket} from "./PredictionMarket.sol";
 
 /// @title MarketFactory
 /// @notice Deploys and registers prediction market instances.
@@ -15,6 +16,8 @@ contract MarketFactory {
     error EmptyMetadataURI();
     error ZeroPositionToken();
     error InvalidPositionToken();
+    error DeploymentFailed();
+    error MarketAlreadyExists();
 
     // -------------------------------------------------------------------------
     // Types
@@ -64,17 +67,18 @@ contract MarketFactory {
     // External functions
     // -------------------------------------------------------------------------
 
-    /// @notice Create and register a new prediction market.
+    /// @notice Create and deploy a new prediction market.
     /// @param collateralToken  ERC20 token used as collateral (must be non-zero).
     /// @param resolutionDeadline  Unix timestamp strictly greater than block.timestamp.
     /// @param minLiquidity  Minimum liquidity required (must be > 0).
     /// @param metadataURI  Non-empty metadata URI string.
-    /// @return market  Deterministic address representing the new market.
+    /// @return market  Address of the deployed market contract.
     /// @dev Access: Caller permissions are checked against the sender or assigned roles.
     /// @dev Reverts: `ZeroCollateralToken` if `collateralToken == address(0)` is true.
     ///     `InvalidDeadline` if `resolutionDeadline <= block.timestamp` is true. `ZeroMinLiquidity`
     ///     if `minLiquidity == 0` is true. `EmptyMetadataURI` if `bytes(metadataURI).length == 0`
-    ///     is true.
+    ///     is true. `MarketAlreadyExists` if market already deployed at deterministic address.
+    ///     `DeploymentFailed` if contract deployment fails.
     function createMarket(
         address collateralToken,
         uint256 resolutionDeadline,
@@ -86,16 +90,25 @@ contract MarketFactory {
         if (minLiquidity == 0) revert ZeroMinLiquidity();
         if (bytes(metadataURI).length == 0) revert EmptyMetadataURI();
 
-        // Derive a deterministic market address from caller + timestamp + list length
-        market = address(
-            uint160(
-                uint256(
-                    keccak256(
-                        abi.encodePacked(msg.sender, block.timestamp, _marketList.length)
-                    )
-                )
-            )
+        // Generate a unique salt per market creation
+        // Using msg.sender, block.timestamp, and market count for uniqueness
+        bytes32 salt = keccak256(abi.encodePacked(msg.sender, block.timestamp, _marketList.length));
+
+        // Deploy the market contract using CREATE2 with the salt
+        // The constructor arguments ensure the deployment is deterministic
+        PredictionMarket deployedMarket = (new PredictionMarket){salt: salt}(
+            address(this),
+            address(positionToken),
+            collateralToken,
+            resolutionDeadline,
+            minLiquidity,
+            metadataURI
         );
+        
+        market = address(deployedMarket);
+
+        // Verify deployment succeeded
+        if (market.code.length == 0) revert DeploymentFailed();
 
         _markets[market] = MarketInfo({
             creator: msg.sender,
@@ -112,6 +125,50 @@ contract MarketFactory {
         positionToken.authorise(market);
 
         emit MarketCreated(market, msg.sender, collateralToken, resolutionDeadline);
+    }
+
+    /// @notice Compute the deterministic address for a market without deploying.
+    /// @param creator The creator address.
+    /// @param timestamp The block timestamp.
+    /// @param index The market index in the factory.
+    /// @param collateralToken The collateral token address.
+    /// @param resolutionDeadline The resolution deadline.
+    /// @param minLiquidity The minimum liquidity.
+    /// @param metadataURI The metadata URI.
+    /// @return The predicted market address.
+    /// @dev Access: No caller-specific access restriction is imposed.
+    function computeMarketAddress(
+        address creator,
+        uint256 timestamp,
+        uint256 index,
+        address collateralToken,
+        uint256 resolutionDeadline,
+        uint256 minLiquidity,
+        string calldata metadataURI
+    ) external view returns (address) {
+        bytes32 salt = keccak256(abi.encodePacked(creator, timestamp, index));
+        
+        // The deployment code is creationCode + abi.encode(arguments)
+        bytes memory constructorArgs = abi.encode(
+            address(this),
+            address(positionToken),
+            collateralToken,
+            resolutionDeadline,
+            minLiquidity,
+            metadataURI
+        );
+        
+        bytes32 initCodeHash = keccak256(abi.encodePacked(
+            type(PredictionMarket).creationCode,
+            constructorArgs
+        ));
+        
+        return address(uint160(uint256(keccak256(abi.encodePacked(
+            bytes1(0xff),
+            address(this),
+            salt,
+            initCodeHash
+        )))));
     }
 
     /// @notice Returns the number of registered markets.
