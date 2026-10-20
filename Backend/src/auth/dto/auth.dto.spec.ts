@@ -36,6 +36,16 @@ describe('Auth DTOs', () => {
       expect(errors).toHaveLength(0);
     });
 
+    it('trims and lowercases email before validation', () => {
+      const dto = plainToInstance(RegisterDto, {
+        ...validRegister,
+        email: '  User@Example.COM  ',
+      });
+
+      expect(validateSync(dto, PIPE_OPTIONS)).toHaveLength(0);
+      expect(dto.email).toBe('user@example.com');
+    });
+
     it('rejects an invalid email', () => {
       const errors = check(RegisterDto, {
         ...validRegister,

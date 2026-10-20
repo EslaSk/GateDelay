@@ -25,6 +25,7 @@ import { User } from './entities/user.entity';
 import { Session } from './entities/session.entity';
 import { PasswordReset } from './entities/password-reset.entity';
 import { ResetOutboxEntry } from './entities/reset-outbox.entity';
+import { normalizeEmail } from './email-normalization';
 
 @Injectable()
 export class AuthService {
@@ -47,26 +48,27 @@ export class AuthService {
   }
 
   async register(dto: RegisterDto, deviceInfo?: DeviceInfoDto) {
-    if (this.usersByEmail.has(dto.email)) {
+    const email = normalizeEmail(dto.email);
+    if (this.usersByEmail.has(email)) {
       throw new ConflictException('Email already registered');
     }
     const id = uuidv4();
     const hashed = await bcrypt.hash(dto.password, 10);
     const user: User = {
       id,
-      email: dto.email,
+      email,
       password: hashed,
       name: dto.name,
       provider: 'local',
       createdAt: new Date(),
     };
     this.users.set(id, user);
-    this.usersByEmail.set(dto.email, id);
+    this.usersByEmail.set(email, id);
     return this.generateTokens(user, deviceInfo);
   }
 
   async login(dto: LoginDto, deviceInfo?: DeviceInfoDto) {
-    const userId = this.usersByEmail.get(dto.email);
+    const userId = this.usersByEmail.get(normalizeEmail(dto.email));
     if (!userId) throw new UnauthorizedException('Invalid credentials');
     const user = this.users.get(userId)!;
     if (!user.password) throw new UnauthorizedException('Use social login');
@@ -78,25 +80,26 @@ export class AuthService {
   async socialLogin(dto: SocialLoginDto, deviceInfo?: DeviceInfoDto) {
     // Verify token with provider and extract profile
     const profile = await this.verifySocialToken(dto.provider, dto.accessToken);
-    let userId = this.usersByEmail.get(profile.email);
+    const email = normalizeEmail(profile.email);
+    let userId = this.usersByEmail.get(email);
     if (!userId) {
       userId = uuidv4();
       const user: User = {
         id: userId,
-        email: profile.email,
+        email,
         name: profile.name,
         provider: dto.provider,
         providerId: profile.id,
         createdAt: new Date(),
       };
       this.users.set(userId, user);
-      this.usersByEmail.set(profile.email, userId);
+      this.usersByEmail.set(email, userId);
     }
     return this.generateTokens(this.users.get(userId)!, deviceInfo);
   }
 
   async forgotPassword(dto: ForgotPasswordDto) {
-    const userId = this.usersByEmail.get(dto.email);
+    const userId = this.usersByEmail.get(normalizeEmail(dto.email));
     
     // Always return the same response to prevent email enumeration
     const standardResponse = { message: 'If the email exists, a reset link was sent' };
@@ -130,7 +133,7 @@ export class AuthService {
     // Create outbox entry for idempotent email delivery
     const outboxEntry: ResetOutboxEntry = {
       id: resetId,
-      email: dto.email,
+      email: user.email,
       tokenHash,
       createdAt: new Date(),
       attempts: 0,

@@ -1,3 +1,4 @@
+import { Transform } from 'class-transformer';
 import {
   IsEmail,
   IsString,
@@ -8,10 +9,14 @@ import {
   Matches,
   IsNotEmpty,
 } from 'class-validator';
+import { normalizeEmail } from '../email-normalization';
 
 // Auth DTOs accept only bounded, typed values. Secrets remain opaque here and
 // must be verified by AuthService; this boundary does not log or interpolate them.
 export class RegisterDto {
+  @Transform(({ value }) =>
+    typeof value === 'string' ? normalizeEmail(value) : value,
+  )
   @IsEmail()
   @MaxLength(320)
   email: string;
@@ -36,6 +41,9 @@ export class RegisterDto {
 }
 
 export class LoginDto {
+  @Transform(({ value }) =>
+    typeof value === 'string' ? normalizeEmail(value) : value,
+  )
   @IsEmail()
   @MaxLength(320)
   email: string;
@@ -49,6 +57,9 @@ export class LoginDto {
 }
 
 export class ForgotPasswordDto {
+  @Transform(({ value }) =>
+    typeof value === 'string' ? normalizeEmail(value) : value,
+  )
   @IsEmail()
   @MaxLength(320)
   email: string;
