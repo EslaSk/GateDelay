@@ -129,12 +129,16 @@ contract MultiSigWallet {
     /// @dev Access: Caller permissions are checked against the sender or assigned roles.
     /// @dev Reverts: `NotSigner` if `!isSigner[msg.sender]` is true. `InvalidThreshold` if
     ///     `newThreshold == 0 || newThreshold > signers.length` is true.
+    /// @dev After updating, recomputes PENDING/APPROVED readiness for non-terminal proposals
+    ///     against the new threshold so prior approvals cannot silently satisfy a higher bar.
     function updateThreshold(uint256 newThreshold) external {
         if (!isSigner[msg.sender]) revert NotSigner();
         if (newThreshold == 0 || newThreshold > signers.length) revert InvalidThreshold();
 
         threshold = newThreshold;
         emit ThresholdUpdated(newThreshold);
+
+        _recomputeTransactionReadiness();
     }
 
     /// @notice Create a new transaction for approval.
@@ -204,19 +208,45 @@ contract MultiSigWallet {
         }
     }
 
+    /// @notice Recompute PENDING/APPROVED status for all non-terminal transactions against the
+    ///     current approval threshold.
+    function _recomputeTransactionReadiness() internal {
+        for (uint256 i = 0; i < transactionCount; ++i) {
+            Transaction storage transaction = transactions[i];
+            if (
+                transaction.status == TransactionStatus.EXECUTED
+                    || transaction.status == TransactionStatus.REJECTED
+            ) {
+                continue;
+            }
+
+            if (transaction.approvalCount >= threshold) {
+                transaction.status = TransactionStatus.APPROVED;
+            } else {
+                transaction.status = TransactionStatus.PENDING;
+            }
+        }
+    }
+
     /// @notice Execute an approved transaction.
     /// @param txId The ID of the transaction to execute.
     /// @dev Access: Caller permissions are checked against the sender or assigned roles.
     /// @dev Reverts: `NotSigner` if `!isSigner[msg.sender]` is true. `TransactionNotFound` if `txId
-    ///     >= transactionCount` is true. `InsufficientApprovals` if `transaction.status !=
-    ///     TransactionStatus.APPROVED` is true. `TransactionAlreadyExecuted` if
+    ///     >= transactionCount` is true. `InsufficientApprovals` if status is not APPROVED or
+    ///     `approvalCount` is below the current threshold. `TransactionAlreadyExecuted` if
     ///     `transaction.executedAt != 0` is true. Preserves target revert reason if execution fails.
     function executeTransaction(uint256 txId) external {
         if (!isSigner[msg.sender]) revert NotSigner();
         if (txId >= transactionCount) revert TransactionNotFound();
 
         Transaction storage transaction = transactions[txId];
-        if (transaction.status != TransactionStatus.APPROVED) revert InsufficientApprovals();
+        // Re-check live threshold so APPROVED status from a prior (lower) threshold cannot bypass.
+        if (
+            transaction.status != TransactionStatus.APPROVED
+                || transaction.approvalCount < threshold
+        ) {
+            revert InsufficientApprovals();
+        }
         if (transaction.executedAt != 0) revert TransactionAlreadyExecuted();
 
         transaction.status = TransactionStatus.EXECUTED;
