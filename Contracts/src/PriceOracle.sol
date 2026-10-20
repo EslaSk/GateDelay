@@ -16,12 +16,18 @@ contract PriceOracle is Ownable {
     error FeedNotRegistered();
     error FeedAlreadyRegistered();
     error NotAuthorizedUpdater();
+    error InvalidTimestamp();
+    error FutureTimestamp();
+    error SourceTimestampNotIncreasing();
+    error RoundIdNotIncreasing();
 
     // ── Types ──────────────────────────────────────────────────────────────────
 
     struct FeedData {
         int256  price;          // latest price (18-decimal fixed-point)
-        uint256 updatedAt;      // timestamp of last update
+        uint256 updatedAt;      // timestamp of the source observation
+        uint80  roundId;        // latest source round identifier
+        uint256 receivedAt;     // timestamp when the update was received
         uint256 maxStaleness;   // max seconds before price is considered stale
         bool    active;         // whether this feed is active
         string  description;    // human-readable label (e.g. "ETH/USD")
@@ -30,7 +36,13 @@ contract PriceOracle is Ownable {
     // ── Events ─────────────────────────────────────────────────────────────────
     event FeedRegistered(bytes32 indexed feedId, string description, uint256 maxStaleness);
     event FeedDeactivated(bytes32 indexed feedId);
-    event PriceUpdated(bytes32 indexed feedId, int256 price, uint256 timestamp);
+    event PriceUpdated(
+        bytes32 indexed feedId,
+        int256 price,
+        uint256 sourceTimestamp,
+        uint80 roundId,
+        uint256 receivedAt
+    );
     event FallbackSet(bytes32 indexed primaryFeedId, bytes32 indexed fallbackFeedId);
     event UpdaterSet(address indexed updater, bool approved);
 
@@ -76,6 +88,8 @@ contract PriceOracle is Ownable {
         feeds[feedId] = FeedData({
             price: 0,
             updatedAt: 0,
+            roundId: 0,
+            receivedAt: 0,
             maxStaleness: maxStaleness,
             active: true,
             description: description
@@ -117,16 +131,31 @@ contract PriceOracle is Ownable {
 
     // ── Price updates ──────────────────────────────────────────────────────────
 
-    /// @notice Push a new price for a feed.
-    /// @param feedId  The feed to update.
-    /// @param price   New price value (must be > 0).
+    /// @notice Push a new price and its source observation metadata for a feed.
+    /// @param feedId          The feed to update.
+    /// @param price           New price value (must be > 0).
+    /// @param sourceTimestamp Timestamp of the source observation.
+    /// @param roundId         Monotonically increasing source round identifier.
     /// @dev Access: Caller must satisfy `onlyUpdater` access checks.
-    /// @dev Reverts: `InvalidPrice` if `price <= 0` is true.
-    function updatePrice(bytes32 feedId, int256 price) external onlyUpdater feedExists(feedId) {
+    /// @dev Reverts for invalid prices, zero/future/regressing timestamps, or repeated/regressing rounds.
+    function updatePrice(bytes32 feedId, int256 price, uint256 sourceTimestamp, uint80 roundId)
+        external
+        onlyUpdater
+        feedExists(feedId)
+    {
         if (price <= 0) revert InvalidPrice();
-        feeds[feedId].price = price;
-        feeds[feedId].updatedAt = block.timestamp;
-        emit PriceUpdated(feedId, price, block.timestamp);
+        if (sourceTimestamp == 0) revert InvalidTimestamp();
+        if (sourceTimestamp > block.timestamp) revert FutureTimestamp();
+
+        FeedData storage feed = feeds[feedId];
+        if (sourceTimestamp <= feed.updatedAt) revert SourceTimestampNotIncreasing();
+        if (roundId == 0 || roundId <= feed.roundId) revert RoundIdNotIncreasing();
+
+        feed.price = price;
+        feed.updatedAt = sourceTimestamp;
+        feed.roundId = roundId;
+        feed.receivedAt = block.timestamp;
+        emit PriceUpdated(feedId, price, sourceTimestamp, roundId, feed.receivedAt);
     }
 
     // ── Price queries ──────────────────────────────────────────────────────────
@@ -134,7 +163,7 @@ contract PriceOracle is Ownable {
     /// @notice Returns the latest valid price for a feed, falling back if primary is stale.
     /// @param feedId  The primary feed to query.
     /// @return price      The latest valid price.
-    /// @return updatedAt  Timestamp of the price.
+    /// @return updatedAt  Source observation timestamp of the price.
     /// @dev Access: No caller-specific access restriction is imposed.
     function getPrice(bytes32 feedId) external view returns (int256 price, uint256 updatedAt) {
         (price, updatedAt) = _resolvePrice(feedId);
@@ -142,8 +171,8 @@ contract PriceOracle is Ownable {
 
     /// @notice Returns the latest price without reverting on staleness (caller must validate).
     /// @param feedId Identifier of the relevant feed.
-    /// @return Raw price returned by the operation.
-    /// @return Raw price returned by the operation.
+    /// @return price Latest stored price.
+    /// @return updatedAt Source observation timestamp of the price.
     /// @dev Access: No caller-specific access restriction is imposed.
     function getRawPrice(bytes32 feedId) external view feedExists(feedId) returns (int256, uint256) {
         FeedData storage f = feeds[feedId];
