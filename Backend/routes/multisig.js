@@ -38,12 +38,15 @@ const KNOWN_CLIENT_ERRORS = new Map([
   ['Proposer is not a valid address', { status: 400, code: 'VALIDATION_ERROR' }],
   ['Owner is not a valid address', { status: 400, code: 'VALIDATION_ERROR' }],
   ['Executor is not a valid address', { status: 400, code: 'VALIDATION_ERROR' }],
+  ['Invalid proposer address', { status: 400, code: 'VALIDATION_ERROR' }],
   ['Proposer is not an owner of this multisig', { status: 403, code: 'FORBIDDEN' }],
   ['Signer is not an owner of this multisig', { status: 403, code: 'FORBIDDEN' }],
   ['Executor is not an owner of this multisig', { status: 403, code: 'FORBIDDEN' }],
   ['Invalid signature', { status: 400, code: 'VALIDATION_ERROR' }],
   ['Signature does not match owner', { status: 401, code: 'UNAUTHORIZED' }],
   ['Owner has already signed this transaction', { status: 409, code: 'CONFLICT' }],
+  ['Transaction has already been executed', { status: 409, code: 'CONFLICT' }],
+  ['Transaction was concurrently modified; please retry', { status: 409, code: 'CONFLICT' }],
 ]);
 
 function sanitizeErrorMessage(message) {
@@ -225,7 +228,7 @@ router.get('/wallet/:walletId', handleErrors(async (req, res) => {
   }
 
   const wallet = multisigService.getWallet(walletId);
-  res.json({ success: true, data: wallet }));
+  res.json({ success: true, data: wallet });
 }));
 
 /**
@@ -311,7 +314,7 @@ router.post('/execute', handleErrors(async (req, res) => {
     return rejectUnauthorized(res);
   }
 
-  const pending = multisigService.getTransactionStatus(txId);
+  const pending = await multisigService.getTransactionStatus(txId);
   if (!multisigService.isOwner(pending.walletId, proof.address)) {
     return rejectForbidden(res);
   }
@@ -330,8 +333,61 @@ router.get('/status/:txId', handleErrors(async (req, res) => {
     return rejectValidation(res, 'Invalid txId');
   }
 
-  const status = multisigService.getTransactionStatus(txId);
+  const status = await multisigService.getTransactionStatus(txId);
   res.json({ success: true, data: redactTransaction(status) });
+}));
+
+/**
+ * GET /api/multisig/transactions
+ * Owner-scoped list of transactions, paginated.
+ *
+ * Query params:
+ *   proposer  - filter to transactions proposed by this address (owner view)
+ *   walletId  - filter by wallet id
+ *   status    - filter by status (Pending | Ready | Executed | Failed)
+ *   page      - 1-indexed page number (default 1)
+ *   limit     - items per page, max 100 (default 20)
+ *
+ * Authorization: callers filter by their own address; the route does not
+ * enforce that the requester IS the proposer (that belongs to an auth layer
+ * above this router). Rate-limiting is enforced by strictDDoSGuard above.
+ */
+router.get('/transactions', handleErrors(async (req, res) => {
+  const { proposer, walletId: rawWalletId, status, page, limit } = req.query;
+
+  // Validate walletId if supplied.
+  let walletId;
+  if (rawWalletId !== undefined) {
+    walletId = parseWalletId(rawWalletId);
+    if (!walletId) {
+      return rejectValidation(res, 'Invalid walletId');
+    }
+  }
+
+  // Validate proposer address if supplied.
+  let proposerAddr;
+  if (proposer !== undefined) {
+    proposerAddr = parseAddress(proposer);
+    if (!proposerAddr) {
+      return rejectValidation(res, 'Invalid proposer address');
+    }
+  }
+
+  const result = await multisigService.listTransactions(
+    { proposer: proposerAddr, walletId, status },
+    { page, limit }
+  );
+
+  res.json({
+    success: true,
+    data: result.data.map(redactTransaction),
+    meta: {
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
+      totalPages: result.totalPages,
+    },
+  });
 }));
 
 module.exports = router;
