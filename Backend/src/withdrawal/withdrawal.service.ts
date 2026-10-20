@@ -28,6 +28,15 @@ const ERC20_TRANSFER_ABI = [
 const NATIVE_SENTINEL = 'NATIVE';
 const DEFAULT_REQUIRED_CONFIRMATIONS = 12;
 
+/** Maximum value expressible as EVM uint256 (2^256 − 1). */
+const UINT256_MAX = 2n ** 256n - 1n;
+
+/**
+ * Canonical-integer regex: one or more decimal digits, no leading zeros (except
+ * the bare "0" itself is rejected later by the > 0 check), no sign, no decimal
+ * point, no whitespace.
+ */
+const CANONICAL_INT_RE = /^(?:0|[1-9]\d*)$/;
 /**
  * How many times trackConfirmations will retry after a recoverable provider
  * error before giving up and leaving the record in 'submitted' state for the
@@ -180,6 +189,18 @@ export class WithdrawalService {
           'multiSigThreshold cannot exceed the number of signers',
         );
       }
+      // Multi-sig withdrawals MUST supply chainId and expiry so that approval
+      // messages are chain-scoped and time-bounded.
+      if (!dto.chainId) {
+        throw new BadRequestException(
+          'chainId is required for multi-sig withdrawals',
+        );
+      }
+      if (!dto.expiry || dto.expiry <= Math.floor(Date.now() / 1000)) {
+        throw new BadRequestException(
+          'expiry must be a future Unix timestamp (seconds) for multi-sig withdrawals',
+        );
+      }
     }
 
     const record: WithdrawalRecord = {
@@ -189,6 +210,8 @@ export class WithdrawalService {
       toAddress,
       tokenAddress,
       amount: dto.amount,
+      chainId: dto.chainId ?? 0,
+      expiry: dto.expiry ?? 0,
       status: 'pending',
       confirmations: 0,
       requiredConfirmations: DEFAULT_REQUIRED_CONFIRMATIONS,
@@ -356,7 +379,10 @@ export class WithdrawalService {
     return { data, nextCursor, hasMore };
   }
 
-  /** Cancel a pending withdrawal that has not yet been submitted on-chain. */
+  /** Cancel a pending withdrawal that has not yet been submitted on-chain.
+   *  Atomically marks any linked multi-sig record as 'rejected' so that no
+   *  further signatures can be added after cancellation.
+   */
   cancelWithdrawal(withdrawalId: string, userId: string): WithdrawalRecord {
     const record = this.getWithdrawalOrThrow(withdrawalId);
     this.assertOwner(record, userId);
@@ -367,8 +393,22 @@ export class WithdrawalService {
       );
     }
 
+    // Atomically cancel the withdrawal and reject the linked multisig so that
+    // addMultiSigSignature cannot advance approval state on a cancelled intent.
     record.status = 'cancelled';
     this.withdrawals.set(withdrawalId, record);
+
+    if (record.multiSigId) {
+      const ms = this.multiSigs.get(record.multiSigId);
+      if (ms && ms.status !== 'executed' && ms.status !== 'rejected') {
+        ms.status = 'rejected';
+        this.multiSigs.set(ms.id, ms);
+        this.logger.log(
+          `MultiSig ${ms.id} rejected due to cancellation of withdrawal ${withdrawalId}`,
+        );
+      }
+    }
+
     this.logger.log(`Withdrawal ${withdrawalId} cancelled by user ${userId}`);
     return record;
   }
@@ -383,6 +423,15 @@ export class WithdrawalService {
   ): MultiSigWithdrawal {
     const record = this.getWithdrawalOrThrow(withdrawalId);
     this.assertOwner(record, userId);
+
+    // Issue 4 fix: reject new approvals on any non-pending withdrawal lifecycle
+    // state so that cancelled, failed, or already-confirmed withdrawals cannot
+    // continue accumulating signatures.
+    if (record.status !== 'pending') {
+      throw new BadRequestException(
+        `Cannot add signatures to a withdrawal that is already ${record.status}`,
+      );
+    }
 
     if (!record.multiSigId) {
       throw new BadRequestException(
@@ -415,8 +464,10 @@ export class WithdrawalService {
       );
     }
 
-    // Verify the signer actually signed the withdrawal id
-    this.verifyMultiSigSignature(withdrawalId, dto.signature, signerAddress);
+    // Issue 2 fix: verify the signer signed the full structured intent (not just
+    // the withdrawal id), so the signature binds destination, asset, amount,
+    // chain and expiry.
+    this.verifyMultiSigSignature(withdrawalId, dto.signature, signerAddress, record);
 
     ms.signatures[signerAddress] = dto.signature;
 
@@ -614,10 +665,49 @@ export class WithdrawalService {
     withdrawalId: string,
     signature: string,
     expectedSigner: string,
+    record: WithdrawalRecord,
   ): void {
+    // Reject expired approval messages before verifying the signature.
+    if (record.expiry > 0 && Math.floor(Date.now() / 1000) > record.expiry) {
+      throw new BadRequestException(
+        'Withdrawal approval has expired; a new withdrawal must be created',
+      );
+    }
+
+    // Build a structured message that binds every immutable field of the
+    // withdrawal intent.  A signature over this message cannot authorize a
+    // different destination, asset, amount, chain, or request — and it expires
+    // at the recorded timestamp so stale approvals are never replayable.
+    //
+    // Fields are serialised with a deterministic sorted-key array so client
+    // and server always produce the same string regardless of insertion order.
+    const KEY_ORDER = [
+      'amount',
+      'chainId',
+      'domain',
+      'expiry',
+      'fromAddress',
+      'toAddress',
+      'tokenAddress',
+      'withdrawalId',
+    ] as const;
+
+    const intent = JSON.stringify(
+      {
+        domain: 'GateDelay-withdrawal-v1',
+        chainId: record.chainId,
+        withdrawalId,
+        fromAddress: record.fromAddress,
+        toAddress: record.toAddress,
+        tokenAddress: record.tokenAddress,
+        amount: record.amount,
+        expiry: record.expiry,
+      },
+      KEY_ORDER,
+    );
+
     try {
-      const message = `GateDelay withdrawal ${withdrawalId}`;
-      const recovered = ethers.verifyMessage(message, signature);
+      const recovered = ethers.verifyMessage(intent, signature);
       if (recovered.toLowerCase() !== expectedSigner.toLowerCase()) {
         throw new BadRequestException(
           `Signature does not match signer ${expectedSigner}`,
@@ -629,6 +719,66 @@ export class WithdrawalService {
     }
   }
 
+  /**
+   * Build the canonical approval message for a withdrawal.
+   *
+   * **Clients MUST display every field in `fields` to the signer before
+   * requesting a signature.**  Signing a message that omits any of these
+   * fields means the signer cannot verify what they are authorising.
+   *
+   * The returned `message` string is exactly what `ethers.signMessage` /
+   * `personal_sign` must be called with.  Any deviation will cause server-side
+   * signature verification to fail.
+   *
+   * Issue 3 note: multi-sig withdrawals in this service are an **off-chain
+   * approval workflow**.  The `txData` returned by `initiateWithdrawal` is a
+   * plain single-owner transfer; it does not route through an on-chain
+   * multi-sig contract.  To enforce an on-chain threshold, callers must submit
+   * `txData` to a Gnosis Safe or equivalent multi-sig contract rather than
+   * broadcasting it directly.  This service tracks off-chain signer consent
+   * only and must not be represented as providing on-chain multi-sig
+   * authorization.
+   */
+  buildApprovalMessage(record: WithdrawalRecord): {
+    fields: {
+      domain: string;
+      chainId: number;
+      withdrawalId: string;
+      fromAddress: string;
+      toAddress: string;
+      tokenAddress: string;
+      amount: string;
+      expiry: number;
+    };
+    message: string;
+  } {
+    const KEY_ORDER = [
+      'amount',
+      'chainId',
+      'domain',
+      'expiry',
+      'fromAddress',
+      'toAddress',
+      'tokenAddress',
+      'withdrawalId',
+    ] as const;
+
+    const fields = {
+      domain: 'GateDelay-withdrawal-v1' as const,
+      chainId: record.chainId,
+      withdrawalId: record.id,
+      fromAddress: record.fromAddress,
+      toAddress: record.toAddress,
+      tokenAddress: record.tokenAddress,
+      amount: record.amount,
+      expiry: record.expiry,
+    };
+
+    const message = JSON.stringify(fields, KEY_ORDER);
+
+    return { fields, message };
+  }
+
   private checksumAddress(address: string): string {
     try {
       return ethers.getAddress(address);
@@ -638,15 +788,31 @@ export class WithdrawalService {
   }
 
   private validateAmount(amount: string): void {
+    // Reject non-canonical representations before any BigInt conversion:
+    // no leading zeros, no sign prefix, no decimal point, no whitespace,
+    // no hex/octet/exponential notation (BigInt() would otherwise accept them).
+    if (typeof amount !== 'string' || !CANONICAL_INT_RE.test(amount)) {
+      throw new BadRequestException(
+        'Amount must be a canonical decimal integer string with no leading zeros, sign, or decimal point',
+      );
+    }
+
+    let parsed: bigint;
     try {
-      const parsed = BigInt(amount);
-      if (parsed <= 0n) {
-        throw new BadRequestException('Amount must be greater than zero');
-      }
-    } catch (err) {
-      if (err instanceof BadRequestException) throw err;
+      parsed = BigInt(amount);
+    } catch {
       throw new BadRequestException(
         'Amount must be a valid positive integer string (in smallest unit)',
+      );
+    }
+
+    if (parsed <= 0n) {
+      throw new BadRequestException('Amount must be greater than zero');
+    }
+
+    if (parsed > UINT256_MAX) {
+      throw new BadRequestException(
+        'Amount exceeds maximum uint256 value and cannot be encoded on-chain',
       );
     }
   }
