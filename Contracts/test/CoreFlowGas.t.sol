@@ -81,7 +81,7 @@ contract CoreFlowGasTest is Test {
         PriceOracle priceOracle = new PriceOracle();
         priceOracle.registerFeed(ORACLE_FEED, "Oracle/USD", 365 days);
         priceOracle.setUpdater(address(this), true);
-        priceOracle.updatePrice(ORACLE_FEED, 1e18);
+        priceOracle.updatePrice(ORACLE_FEED, 1e18, block.timestamp, 1);
 
         Resolution resolution = new Resolution(1 days, address(this), address(this), address(positionToken), address(priceOracle));
         pool.setResolution(address(resolution));
