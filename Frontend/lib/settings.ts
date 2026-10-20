@@ -80,25 +80,37 @@ export const DEFAULT_SETTINGS: UserSettings = {
 
 const STORAGE_KEY = SETTINGS_STORAGE_KEY;
 
+/**
+ * Single merge point for settings coming from persistence, so the initial
+ * load, JSON import, and cross-tab `storage` events all reuse the same
+ * validation and merging before any subscriber is notified.
+ */
+function mergePersistedSettings(parsed: unknown): UserSettings {
+  const source: Record<string, unknown> =
+    parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  return { ...DEFAULT_SETTINGS, ...source, theme: normalizeTheme(source.theme) };
+}
+
 export class SettingsService {
   private persistenceStatus: PersistenceStatus = "not-saved";
   private persistenceListeners = new Set<(status: PersistenceStatus) => void>();
   private settings: UserSettings = DEFAULT_SETTINGS;
   private listeners: Set<(settings: UserSettings) => void> = new Set();
+  private storageListener: ((event: StorageEvent) => void) | null = null;
 
   constructor() {
     if (typeof window !== "undefined") {
       try {
         const stored = localStorage.getItem(STORAGE_KEY);
         if (stored) {
-          const parsed = JSON.parse(stored);
-          this.settings = { ...DEFAULT_SETTINGS, ...parsed, theme: normalizeTheme(parsed?.theme) };
+          this.settings = mergePersistedSettings(JSON.parse(stored));
           this.persistenceStatus = "persisted";
         }
       } catch (e) {
         this.persistenceStatus = "session-only";
         reportError("Failed to load settings from localStorage", e);
       }
+      this.registerStorageListener();
     }
   }
 
@@ -151,7 +163,7 @@ export class SettingsService {
       const parsed = JSON.parse(json);
       // Basic structural validation
       if (parsed && typeof parsed === "object") {
-        this.settings = { ...DEFAULT_SETTINGS, ...parsed, theme: normalizeTheme(parsed.theme) };
+        this.settings = mergePersistedSettings(parsed);
         this.saveAndNotify();
         return true;
       }
@@ -199,6 +211,56 @@ export class SettingsService {
       this.persistenceStatus = status;
       this.persistenceListeners.forEach((listener) => this.notify(listener, status));
     }
+    this.listeners.forEach((listener) => this.notify(listener, this.settings));
+  }
+
+  /**
+   * Cross-tab synchronization (FE-014): the browser fires a `storage` event in
+   * every *other* tab whenever this tab's localStorage entry is written, and it
+   * never fires in the tab that performed the write. Listening here lets each
+   * tab apply the remote value without re-saving it, which is what keeps the
+   * propagation free of echo loops and duplicate saves.
+   */
+  private registerStorageListener(): void {
+    if (typeof window.addEventListener !== "function") return;
+    this.storageListener = (event: StorageEvent) => this.handleStorageEvent(event);
+    try {
+      window.addEventListener("storage", this.storageListener);
+    } catch (error) {
+      reportError("Failed to register the cross-tab settings listener", error);
+      this.storageListener = null;
+    }
+  }
+
+  private handleStorageEvent(event: StorageEvent): void {
+    try {
+      // Unrelated keys and non-localStorage areas (e.g. sessionStorage or
+      // synthetic events without a storage area) must not trigger updates.
+      if (event.key !== STORAGE_KEY) return;
+      if (event.storageArea !== window.localStorage) return;
+
+      let next: UserSettings;
+      if (event.newValue === null) {
+        // Another tab removed the key; fall back to the defaults like a fresh load.
+        next = { ...DEFAULT_SETTINGS };
+      } else {
+        next = mergePersistedSettings(JSON.parse(event.newValue));
+      }
+      this.applyRemoteSettings(next);
+    } catch (error) {
+      // A malformed remote payload must never corrupt local state.
+      reportError("Failed to apply cross-tab settings update", error);
+    }
+  }
+
+  /**
+   * Applies a value persisted by another tab. Deliberately does NOT write back
+   * to localStorage (the value is already there) and does not touch the
+   * persistence status, which tracks this tab's own save capability.
+   */
+  private applyRemoteSettings(next: UserSettings): void {
+    if (JSON.stringify(next) === JSON.stringify(this.settings)) return;
+    this.settings = next;
     this.listeners.forEach((listener) => this.notify(listener, this.settings));
   }
 }
