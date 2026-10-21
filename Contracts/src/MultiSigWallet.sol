@@ -51,6 +51,7 @@ contract MultiSigWallet {
     event ThresholdUpdated(uint256 newThreshold);
     event TransactionCreated(uint256 indexed txId, address indexed creator, address indexed target);
     event TransactionApproved(uint256 indexed txId, address indexed signer);
+    event TransactionApprovalRevoked(uint256 indexed txId, address indexed signer);
     event TransactionExecuted(uint256 indexed txId, address indexed executor);
     event TransactionRejected(uint256 indexed txId);
 
@@ -226,6 +227,36 @@ contract MultiSigWallet {
         _syncApprovalReadiness(transaction, txId);
 
         emit TransactionApproved(txId, msg.sender);
+    }
+
+    /// @notice Revoke a previously granted approval on an unexecuted transaction.
+    /// @param txId The ID of the transaction to revoke approval from.
+    /// @dev Access: Caller permissions are checked against the sender or assigned roles.
+    /// @dev Reverts: `NotSigner` if `!isSigner[msg.sender]` is true. `TransactionNotFound` if `txId
+    ///     >= transactionCount` is true. `TransactionAlreadyExecuted` if `transaction.status ==
+    ///     TransactionStatus.EXECUTED` is true. `InvalidTransaction` if `transaction.status ==
+    ///     TransactionStatus.REJECTED` is true. `InvalidTransaction` if
+    ///     `!approvals[txId][msg.sender]` is true.
+    /// @dev Decrements `approvalCount` by one. If the transaction was `APPROVED` and the count
+    ///     falls below `threshold`, status returns to `PENDING`. Executed and rejected
+    ///     transactions are immutable.
+    function revokeApproval(uint256 txId) external {
+        if (!isSigner[msg.sender]) revert NotSigner();
+        if (txId >= transactionCount) revert TransactionNotFound();
+
+        Transaction storage transaction = transactions[txId];
+        if (transaction.status == TransactionStatus.EXECUTED) revert TransactionAlreadyExecuted();
+        if (transaction.status == TransactionStatus.REJECTED) revert InvalidTransaction();
+        if (!approvals[txId][msg.sender]) revert InvalidTransaction();
+
+        approvals[txId][msg.sender] = false;
+        transaction.approvalCount--;
+
+        if (transaction.status == TransactionStatus.APPROVED && transaction.approvalCount < threshold) {
+            transaction.status = TransactionStatus.PENDING;
+        }
+
+        emit TransactionApprovalRevoked(txId, msg.sender);
     }
 
     // -------------------------------------------------------------------------
