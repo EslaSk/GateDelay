@@ -785,23 +785,8 @@ export async function processTransaction(
     tx.events.push({
       name: "TransactionExecuted",
       args: { txId, executor: resolvedExecutor },
-  // mined or confirmed
-  tx.status = receipt.status === "confirmed" ? "Confirmed" : "Mined";
-  tx.executedAt = new Date().toISOString();
-
-  if (receipt.blockNumber !== undefined) {
-    tx.blockNumber = receipt.blockNumber;
-  }
-
-  tx.events.push({
-    name: "TransactionExecuted",
-    args: { txId, executor: resolvedExecutor },
-  });
-
-  return tx;
-  });
-
-  return tx;
+    });
+    return tx;
   });
 }
 
