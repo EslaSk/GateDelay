@@ -7,7 +7,7 @@ export async function GET(
 ) {
   try {
     const { txId } = await params;
-    const status = getTransactionStatus(txId);
+    const status = await getTransactionStatus(txId);
     return NextResponse.json({ success: true, data: status });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

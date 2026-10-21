@@ -82,6 +82,11 @@ ENV NODE_ENV=production \
 
 RUN addgroup -g 1001 -S nodejs && adduser -u 1001 -S nextjs -G nodejs
 
+# FE-037 – Durable multisig proposals/approvals.  Mount a shared volume at
+# /data so every replica sees the same records and they survive restarts.
+ENV MULTISIG_STORE_DIR=/data/multisig
+RUN mkdir -p /data/multisig && chown -R nextjs:nodejs /data
+
 # `standalone` already contains server.js and the traced node_modules.
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
