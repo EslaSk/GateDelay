@@ -80,8 +80,8 @@ contract CoreFlowGasTest is Test {
         LiquidityPool pool = new LiquidityPool(address(collateral), market);
         PriceOracle priceOracle = new PriceOracle();
         priceOracle.registerFeed(ORACLE_FEED, "Oracle/USD", 365 days);
-        priceOracle.setUpdater(address(this), true);
-        priceOracle.updatePrice(ORACLE_FEED, 1e18, block.timestamp, 1);
+        priceOracle.setUpdater(ORACLE_FEED, address(this), true);
+        priceOracle.updatePrice(ORACLE_FEED, 1e18);
 
         Resolution resolution = new Resolution(1 days, address(this), address(this), address(positionToken), address(priceOracle));
         pool.setResolution(address(resolution));

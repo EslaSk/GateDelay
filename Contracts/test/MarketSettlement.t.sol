@@ -42,8 +42,8 @@ contract MarketSettlementTest is Test {
         // Resolution enforces oracle freshness on resolve(): deploy a long-lived feed
         priceOracle = new PriceOracle();
         priceOracle.registerFeed(ORACLE_FEED, "Oracle/USD", 365 days);
-        priceOracle.setUpdater(address(this), true);
-        priceOracle.updatePrice(ORACLE_FEED, 1e18, block.timestamp, 1);
+        priceOracle.setUpdater(ORACLE_FEED, address(this), true);
+        priceOracle.updatePrice(ORACLE_FEED, 1e18);
 
         resolution = new Resolution(
             1 days,

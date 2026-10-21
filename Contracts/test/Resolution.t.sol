@@ -85,7 +85,7 @@ contract ResolutionTest is Test {
         // Deploy PriceOracle and register feed
         priceOracle = new PriceOracle();
         priceOracle.registerFeed(ORACLE_FEED_ID, "Market Outcome", MAX_STALENESS);
-        priceOracle.setUpdater(updater, true);
+        priceOracle.setUpdater(ORACLE_FEED_ID, updater, true);
         // Push a fresh price
         vm.prank(updater);
         _updateOraclePrice();

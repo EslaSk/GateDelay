@@ -17,6 +17,10 @@ Former `Contracts/contracts/`, root-level `contracts/` (Burnable, FlashLoanProte
 
 https://book.getfoundry.sh/
 
+Oracle updater permissions are scoped to one feed with
+`setUpdater(feedId, updater, approved)`. The owner remains an emergency updater
+for every active feed and can grant or revoke per-feed updater permissions.
+`UpdaterSet` events index both the feed ID and updater address.
 The `PriceOracle` reserves `bytes32(0)` to represent the absence of a fallback.
 Feed registration and fallback configuration reject this ID with `ZeroFeedId`.
 ### Price oracle fallback feeds

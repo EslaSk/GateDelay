@@ -28,8 +28,8 @@ contract VerdictExecutionTest is Test {
         // Deploy a PriceOracle with a long-lived feed so resolve() freshness checks pass
         priceOracle = new PriceOracle();
         priceOracle.registerFeed(ORACLE_FEED, "Oracle/USD", 365 days);
-        priceOracle.setUpdater(address(this), true);
-        priceOracle.updatePrice(ORACLE_FEED, 1e18, block.timestamp, 1);
+        priceOracle.setUpdater(ORACLE_FEED, address(this), true);
+        priceOracle.updatePrice(ORACLE_FEED, 1e18);
 
         // Deploy Resolution with `verdictExec` as admin so it can call settleDispute
         resolution = new Resolution(

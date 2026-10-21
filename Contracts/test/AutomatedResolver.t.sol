@@ -32,8 +32,8 @@ contract AutomatedResolverTest is Test {
         // Resolution now enforces oracle freshness, so deploy a feed that stays fresh
         priceOracle = new PriceOracle();
         priceOracle.registerFeed(ORACLE_FEED, "Oracle/USD", 365 days);
-        priceOracle.setUpdater(address(this), true);
-        priceOracle.updatePrice(ORACLE_FEED, 1e18, block.timestamp, 1);
+        priceOracle.setUpdater(ORACLE_FEED, address(this), true);
+        priceOracle.updatePrice(ORACLE_FEED, 1e18);
 
         resolution = new Resolution(
             1 days,
