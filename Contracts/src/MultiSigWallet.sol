@@ -3,10 +3,16 @@ pragma solidity ^0.8.20;
 
 /// @title MultiSigWallet
 /// @notice Multi-signature wallet with support for multiple signers and approval requirements.
+/// @dev Approval policy: a transaction is ready only when at least `threshold` members of the
+///      current signer set have approved it under their current membership generation. Removing a
+///      signer increments that address's generation, so earlier approvals from that address no
+///      longer count, including if the address is added again. Readiness and execution recompute
+///      the count from the current signer array, which is bounded by the signer-set size.
 contract MultiSigWallet {
     // -------------------------------------------------------------------------
     // Custom errors
     // -------------------------------------------------------------------------
+    error TransactionExpired();
     error NotSigner();
     error InvalidSignerCount();
     error InvalidThreshold();
@@ -25,7 +31,7 @@ error TransactionNotPending();
     // -------------------------------------------------------------------------
     // Types
     // -------------------------------------------------------------------------
-    enum TransactionStatus { PENDING, APPROVED, EXECUTED, REJECTED }
+    enum TransactionStatus { PENDING, APPROVED, EXECUTED, REJECTED, EXPIRED }
 
     struct Transaction {
         uint256 id;
@@ -49,6 +55,7 @@ error TransactionNotPending();
     event ThresholdUpdated(uint256 newThreshold);
     event TransactionCreated(uint256 indexed txId, address indexed creator, address indexed target);
     event TransactionApproved(uint256 indexed txId, address indexed signer);
+    event TransactionApprovalRevoked(uint256 indexed txId, address indexed signer);
     event TransactionExecuted(uint256 indexed txId, address indexed executor);
     event TransactionRejected(uint256 indexed txId);
 
@@ -73,6 +80,8 @@ error TransactionNotPending();
     // -------------------------------------------------------------------------
     // Storage
     // -------------------------------------------------------------------------
+    /// @notice Proposals expire exactly seven days after creation; deadlines cannot be extended.
+    uint256 public constant PROPOSAL_LIFETIME = 7 days;
     address[] public signers;
     mapping(address => bool) public isSigner;
     uint256 public threshold;
@@ -81,6 +90,10 @@ error TransactionNotPending();
     mapping(uint256 => Transaction) public transactions;
     mapping(uint256 => mapping(address => bool)) public approvals;
     mapping(uint256 => mapping(address => bool)) public rejections;
+    /// @dev Incremented when an address is removed. Approvals store the generation they were cast under.
+    mapping(address => uint256) private signerMembership;
+    /// @dev Membership generation captured when `signer` approved `txId`.
+    mapping(uint256 => mapping(address => uint256)) private approvalMembership;
     uint256 public transactionCount;
 
     // -------------------------------------------------------------------------
@@ -126,6 +139,8 @@ error TransactionNotPending();
     /// @notice Remove a signer from the wallet.
     /// @param signerToRemove The address of the signer to remove.
     /// @dev Access: Caller permissions are checked against the sender or assigned roles.
+    /// @dev Increments the removed address's membership generation so its approvals on pending
+    ///      transactions stop counting. Pending transactions are not scanned here.
     /// @dev Reverts: `NotSigner` if `!isSigner[msg.sender]` is true. `SignerNotFound` if
     ///     `!isSigner[signerToRemove]` is true. `InvalidThreshold` if `signers.length - 1 <
     ///     threshold` is true.
@@ -135,6 +150,8 @@ error TransactionNotPending();
         if (signers.length - 1 < threshold) revert InvalidThreshold();
 
         isSigner[signerToRemove] = false;
+        // Drop this address's existing approvals without scanning pending transactions.
+        signerMembership[signerToRemove]++;
 
         for (uint256 i = 0; i < signers.length; i++) {
             if (signers[i] == signerToRemove) {
@@ -152,12 +169,16 @@ error TransactionNotPending();
     /// @dev Access: Caller permissions are checked against the sender or assigned roles.
     /// @dev Reverts: `NotSigner` if `!isSigner[msg.sender]` is true. `InvalidThreshold` if
     ///     `newThreshold == 0 || newThreshold > signers.length` is true.
+    /// @dev After updating, recomputes PENDING/APPROVED readiness for non-terminal proposals
+    ///     against the new threshold so prior approvals cannot silently satisfy a higher bar.
     function updateThreshold(uint256 newThreshold) external {
         if (!isSigner[msg.sender]) revert NotSigner();
         if (newThreshold == 0 || newThreshold > signers.length) revert InvalidThreshold();
 
         threshold = newThreshold;
         emit ThresholdUpdated(newThreshold);
+
+        _recomputeTransactionReadiness();
     }
 
     /// @notice Create a new transaction for approval.
@@ -214,16 +235,33 @@ error TransactionNotPending();
     /// @param txId The ID of the transaction to approve.
     /// @dev Access: Caller permissions are checked against the sender or assigned roles.
     /// @dev Reverts: `NotSigner` if `!isSigner[msg.sender]` is true. `TransactionNotFound` if `txId
-    ///     >= transactionCount` is true. `InvalidTransaction` if `transaction.status !=
-    ///     TransactionStatus.PENDING` is true. `InvalidTransaction` if
-    ///     `approvals[txId][msg.sender]` is true.
+    ///     >= transactionCount` is true. `TransactionNotPending` if the transaction is executed,
+    ///     rejected, or still ready under the current signer set. `InvalidTransaction` if the
+    ///     caller already has a current-generation approval.
     function approveTransaction(uint256 txId) external {
         if (!isSigner[msg.sender]) revert NotSigner();
         if (txId >= transactionCount) revert TransactionNotFound();
 
         Transaction storage transaction = transactions[txId];
-if (transaction.status != TransactionStatus.PENDING) revert TransactionNotPending();
-if (block.timestamp > transaction.expiry) revert ProposalExpired();
+        if (isExpired(txId)) revert TransactionExpired();
+
+        if (
+            transaction.status == TransactionStatus.EXECUTED ||
+            transaction.status == TransactionStatus.REJECTED
+        ) {
+            revert TransactionNotPending();
+        }
+
+        // Reopen an approved transaction if signer removal dropped the
+        // current approval count below the threshold.
+        if (transaction.status == TransactionStatus.APPROVED) {
+            uint256 currentApprovals = _countCurrentApprovals(txId);
+            if (currentApprovals >= threshold) revert TransactionNotPending();
+
+            transaction.approvalCount = currentApprovals;
+            transaction.status = TransactionStatus.PENDING;
+        }
+
         if (approvals[txId][msg.sender]) revert InvalidTransaction();
 
         _consumeNonce(transaction.nonce, txId);
@@ -235,11 +273,19 @@ if (block.timestamp > transaction.expiry) revert ProposalExpired();
             transaction.status = TransactionStatus.APPROVED;
         }
 
+        if (approvals[txId][msg.sender] && approvalMembership[txId][msg.sender] == signerMembership[msg.sender]) {
+            revert InvalidTransaction();
+        }
+
+        approvals[txId][msg.sender] = true;
+        approvalMembership[txId][msg.sender] = signerMembership[msg.sender];
+        _syncApprovalReadiness(transaction, txId);
+
         emit TransactionApproved(txId, msg.sender);
     }
 
 // -------------------------------------------------------------------------
-// EIP-712 signature and nonce helpers
+// EIP-712 signature approval
 // -------------------------------------------------------------------------
 
 /// @notice Approve a stored transaction using an EIP-712 owner signature.
@@ -253,6 +299,93 @@ function approveTransactionWithSignature(
     Transaction storage transaction = transactions[txId];
     if (transaction.status != TransactionStatus.PENDING) {
         revert TransactionNotPending();
+    }
+    if (block.timestamp > transaction.expiry) revert ProposalExpired();
+    if (!isSigner[signer]) revert NotSigner();
+    if (approvals[txId][signer]) revert DuplicateSigner();
+
+    bytes32 digest = getApprovalDigest(
+        transaction.nonce,
+        transaction.target,
+        transaction.value,
+        keccak256(transaction.data),
+        transaction.expiry
+    );
+
+    if (_recover(digest, signature) != signer) revert InvalidSignature();
+
+    _consumeNonce(transaction.nonce, txId);
+    _recordApproval(txId, signer);
+}
+
+/// @notice Revoke a previously granted approval on an unexecuted transaction.
+function revokeApproval(uint256 txId) external {
+    if (!isSigner[msg.sender]) revert NotSigner();
+    if (txId >= transactionCount) revert TransactionNotFound();
+
+    Transaction storage transaction = transactions[txId];
+    if (transaction.status == TransactionStatus.EXECUTED) {
+        revert TransactionAlreadyExecuted();
+    }
+    if (transaction.status == TransactionStatus.REJECTED) {
+        revert InvalidTransaction();
+    }
+    if (!approvals[txId][msg.sender]) revert InvalidTransaction();
+
+    approvals[txId][msg.sender] = false;
+    transaction.approvalCount--;
+
+    if (
+        transaction.status == TransactionStatus.APPROVED &&
+        transaction.approvalCount < threshold
+    ) {
+        transaction.status = TransactionStatus.PENDING;
+    }
+
+    emit TransactionApprovalRevoked(txId, msg.sender);
+}
+
+// -------------------------------------------------------------------------
+// Internal helpers
+// -------------------------------------------------------------------------
+
+/// @notice Count approvals that still belong to the current signer set.
+function _countCurrentApprovals(uint256 txId)
+    internal
+    view
+    returns (uint256 count)
+{
+    uint256 signerCount = signers.length;
+    for (uint256 i = 0; i < signerCount; i++) {
+        address currentSigner = signers[i];
+        if (
+            approvals[txId][currentSigner] &&
+            approvalMembership[txId][currentSigner] ==
+                signerMembership[currentSigner]
+        ) {
+            count++;
+        }
+    }
+}
+
+/// @notice Refresh the cached approval count from current signers.
+function _syncApprovalReadiness(
+    Transaction storage transaction,
+    uint256 txId
+) internal {
+    uint256 count = _countCurrentApprovals(txId);
+    transaction.approvalCount = count;
+    if (count >= threshold) {
+        transaction.status = TransactionStatus.APPROVED;
+    }
+}
+
+/// @notice Revert with the provided return data, preserving the original reason.
+function _revertWithReason(bytes memory returndata) internal pure {
+    assembly ("memory-safe") {
+        revert(add(returndata, 0x20), mload(returndata))
+    }
+}
     }
     if (block.timestamp > transaction.expiry) revert ProposalExpired();
     if (!isSigner[signer]) revert NotSigner();
@@ -326,21 +459,49 @@ function _revertWithReason(bytes memory returndata) internal pure {
     }
 }
 
+    /// @notice Recompute PENDING/APPROVED status for all non-terminal transactions against the
+    ///     current approval threshold.
+    function _recomputeTransactionReadiness() internal {
+        for (uint256 i = 0; i < transactionCount; ++i) {
+            Transaction storage transaction = transactions[i];
+            if (
+                transaction.status == TransactionStatus.EXECUTED
+                    || transaction.status == TransactionStatus.REJECTED
+            ) {
+                continue;
+            }
+
+            if (transaction.approvalCount >= threshold) {
+                transaction.status = TransactionStatus.APPROVED;
+            } else {
+                transaction.status = TransactionStatus.PENDING;
+            }
+        }
+    }
+
     /// @notice Execute an approved transaction.
     /// @param txId The ID of the transaction to execute.
     /// @dev Access: Caller permissions are checked against the sender or assigned roles.
     /// @dev Reverts: `NotSigner` if `!isSigner[msg.sender]` is true. `TransactionNotFound` if `txId
-    ///     >= transactionCount` is true. `InsufficientApprovals` if `transaction.status !=
-    ///     TransactionStatus.APPROVED` is true. `TransactionAlreadyExecuted` if
+    ///     >= transactionCount` is true. `InsufficientApprovals` if the transaction is not ready or
+    ///     current-signer approvals are below `threshold`. `TransactionAlreadyExecuted` if
     ///     `transaction.executedAt != 0` is true. Preserves target revert reason if execution fails.
     function executeTransaction(uint256 txId) external {
         if (!isSigner[msg.sender]) revert NotSigner();
         if (txId >= transactionCount) revert TransactionNotFound();
 
         Transaction storage transaction = transactions[txId];
-        if (transaction.status != TransactionStatus.APPROVED) revert InsufficientApprovals();
-        if (block.timestamp > transaction.expiry) revert ProposalExpired();
+        if (transaction.status != TransactionStatus.APPROVED) {
+            revert InsufficientApprovals();
+        }
+        if (isExpired(txId)) revert TransactionExpired();
         if (transaction.executedAt != 0) revert TransactionAlreadyExecuted();
+
+        uint256 currentApprovals = _countCurrentApprovals(txId);
+        if (transaction.status != TransactionStatus.APPROVED || currentApprovals < threshold) {
+            revert InsufficientApprovals();
+        }
+        transaction.approvalCount = currentApprovals;
 
         transaction.status = TransactionStatus.EXECUTED;
         transaction.executedAt = block.timestamp;
@@ -366,6 +527,7 @@ function _revertWithReason(bytes memory returndata) internal pure {
         if (txId >= transactionCount) revert TransactionNotFound();
 
         Transaction storage transaction = transactions[txId];
+        if (isExpired(txId)) revert TransactionExpired();
         if (transaction.status != TransactionStatus.PENDING) revert TransactionNotPending();
         if (rejections[txId][msg.sender]) revert InvalidTransaction();
 
@@ -385,7 +547,17 @@ function _revertWithReason(bytes memory returndata) internal pure {
     /// @dev Reverts: `TransactionNotFound` if `txId >= transactionCount` is true.
     function getTransaction(uint256 txId) external view returns (Transaction memory transaction) {
         if (txId >= transactionCount) revert TransactionNotFound();
-        return transactions[txId];
+        transaction = transactions[txId];
+        if (isExpired(txId)) transaction.status = TransactionStatus.EXPIRED;
+        return transaction;
+    }
+
+    /// @notice Expiry applies only to unfinished proposals, including approved proposals.
+    function isExpired(uint256 txId) public view returns (bool) {
+        if (txId >= transactionCount) revert TransactionNotFound();
+        Transaction storage proposal = transactions[txId];
+        return (proposal.status == TransactionStatus.PENDING || proposal.status == TransactionStatus.APPROVED)
+            && block.timestamp >= proposal.deadline;
     }
 
     /// @notice Get all signers.
@@ -418,7 +590,8 @@ function _revertWithReason(bytes memory returndata) internal pure {
     /// @dev Reverts: `TransactionNotFound` if `txId >= transactionCount` is true.
     function hasApproved(uint256 txId, address signer) external view returns (bool) {
         if (txId >= transactionCount) revert TransactionNotFound();
-        return approvals[txId][signer];
+        return !isExpired(txId) && isSigner[signer] && approvals[txId][signer]
+            && approvalMembership[txId][signer] == signerMembership[signer];
     }
 
     /// @notice Check if a signer has rejected a transaction.

@@ -22,6 +22,9 @@
 
 # misc
 .DS_Store
+
+# local durable stores (e.g. multisig proposals, FE-037)
+/.data/
 *.pem
 
 # debug

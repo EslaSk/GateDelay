@@ -10,6 +10,7 @@ contract MarketFactory {
     // -------------------------------------------------------------------------
     // Custom errors
     // -------------------------------------------------------------------------
+    error NotGovernance();
     error ZeroCollateralToken();
     error InvalidDeadline();
     error ZeroMinLiquidity();
@@ -18,6 +19,7 @@ contract MarketFactory {
     error InvalidPositionToken();
     error DeploymentFailed();
     error MarketAlreadyExists();
+    error InvalidRange();
 
     // -------------------------------------------------------------------------
     // Types
@@ -47,6 +49,7 @@ contract MarketFactory {
     // Storage
     // -------------------------------------------------------------------------
     PositionToken public immutable positionToken;
+    address public immutable governance;
 
     /// @dev market address => MarketInfo
     mapping(address => MarketInfo) private _markets;
@@ -61,11 +64,29 @@ contract MarketFactory {
         if (_positionToken == address(0)) revert ZeroPositionToken();
         if (_positionToken.code.length == 0) revert InvalidPositionToken();
         positionToken = PositionToken(_positionToken);
+        governance = msg.sender;
     }
 
     // -------------------------------------------------------------------------
     // External functions
     // -------------------------------------------------------------------------
+
+    /// @notice Manage independent token privileges without changing existing balances.
+    function setMinterPermission(address actor, address market, bool enabled) external {
+        if (msg.sender != governance) revert NotGovernance();
+        if (enabled) positionToken.authoriseMinter(actor, market);
+        else positionToken.revokeMinter(actor);
+    }
+    function setBurnerPermission(address actor, bool enabled) external {
+        if (msg.sender != governance) revert NotGovernance();
+        if (enabled) positionToken.authoriseBurner(actor);
+        else positionToken.revokeBurner(actor);
+    }
+    function setGlobalSettlementPermission(address actor, bool enabled) external {
+        if (msg.sender != governance) revert NotGovernance();
+        if (enabled) positionToken.authoriseGlobalSettlement(actor);
+        else positionToken.revokeGlobalSettlement(actor);
+    }
 
     /// @notice Create and deploy a new prediction market.
     /// @param collateralToken  ERC20 token used as collateral (must be non-zero).
@@ -181,8 +202,38 @@ contract MarketFactory {
     /// @notice Returns all registered market addresses.
     /// @return Markets returned by the operation.
     /// @dev Access: No caller-specific access restriction is imposed.
+    /// @dev WARNING: This returns the entire, ever-growing registry and may exceed RPC
+    ///     response or call-gas limits. Integrations should prefer the paginated
+    ///     `getMarkets(uint256,uint256)` variant together with `getMarketCount()` /
+    ///     `marketCount()` to traverse the registry in bounded pages without omissions
+    ///     or duplicates. Kept for backward compatibility.
     function getMarkets() external view returns (address[] memory) {
         return _marketList;
+    }
+
+    /// @notice Returns a bounded page of registered market addresses.
+    /// @param offset Starting index into the registry (0-based).
+    /// @param count Maximum number of addresses to return.
+    /// @return page Market addresses in `[offset, min(offset + count, length))`.
+    /// @dev Access: No caller-specific access restriction is imposed.
+    /// @dev Reverts: `InvalidRange` if `offset > _marketList.length`. Returns an empty
+    ///     array when `offset == _marketList.length` or `count == 0`. The end index is
+    ///     clamped to the registry length, so pages never revert on the tail.
+    ///     Clients should iterate with `offset += page.length` until `offset` reaches
+    ///     `getMarketCount()` to enumerate all markets without omissions or duplicates.
+    function getMarkets(uint256 offset, uint256 count) external view returns (address[] memory page) {
+        uint256 length = _marketList.length;
+        if (offset > length) revert InvalidRange();
+
+        uint256 end = offset + count;
+        if (end > length) {
+            end = length;
+        }
+
+        page = new address[](end - offset);
+        for (uint256 i = offset; i < end; ++i) {
+            page[i - offset] = _marketList[i];
+        }
     }
 
     /// @notice Returns a registered market address by index.

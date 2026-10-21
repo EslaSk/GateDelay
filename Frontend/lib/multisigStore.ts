@@ -1,5 +1,5 @@
 /**
- * In-memory multisig store for Next.js API routes.
+ * Durable multisig store for Next.js API routes.
  * Mirrors Backend/services/multisigService.js for frontend integration.
  *
  * Contract events are taken from `Contracts/src/MultiSigWallet.sol`:
@@ -22,10 +22,15 @@
  *          caller; simulation is gated behind
  *          `NEXT_PUBLIC_MULTISIG_SIMULATE=true`.
  *
- * #1198 – Signatures are now bound to chain ID, wallet address, nonce, target,
- *          value, calldata hash, and expiry via EIP-712 typed data.  Changing any
- *          bound field invalidates the approval.  Consumed nonces cannot
- *          authorize another transaction (replay resistance).
+ * #1198 – Signatures are bound to chain ID, wallet address, nonce, target,
+ *          value, calldata hash, and expiry via EIP-712 typed data. Changing
+ *          any bound field invalidates the approval, and consumed nonces
+ *          cannot authorize another transaction.
+ * FE-037 – Proposals, signatures, and audit events are persisted through
+ *          `FileMultisigRepository` instead of a module-level Map, so they
+ *          survive restarts and are shared by workers using the same
+ *          `MULTISIG_STORE_DIR`. Mutations run under a per-transaction lock
+ *          to prevent concurrent approvals from recording one owner twice.
  */
 
 import { ethers, TypedDataDomain, TypedDataField } from "ethers";
@@ -33,6 +38,11 @@ import {
   parseDeploymentRegistry,
   type DeploymentEntry,
 } from "./deploymentRegistry";
+import {
+  FileMultisigRepository,
+  resolveMultisigStoreDir,
+  type MultisigRepository,
+} from "./multisigRepository";
 
 // ---------------------------------------------------------------------------
 // #1198 – EIP-712 typed-data constants
@@ -129,12 +139,16 @@ export interface MultisigTransaction {
   nonce: number;
   /** #1198 – Target contract address for the call. */
   target: string;
-  /** #1198 – ETH value to send with the call (wei, as decimal string). */
+  /** #1198 – ETH value to send with the call (wei, as a decimal string). */
   value: string;
   /** #1198 – Keccak-256 hash of the calldata bytes. */
   calldataHash: string;
   /** #1198 – Unix timestamp (seconds) after which this proposal expires. */
   expiry: number;
+  /** Last committed change; set by the repository. */
+  updatedAt: string;
+  /** Revision counter incremented on every committed change. */
+  version: number;
   executedAt?: string;
   /** Real transaction hash from the chain; undefined until broadcast confirms. */
   txHash?: string;
@@ -303,7 +317,14 @@ function buildWalletRegistry(): Record<string, MultisigWallet> {
 // Initialised once per process; tests may call __resetMultisigStoreForTests.
 let MULTISIG_WALLETS: Record<string, MultisigWallet> = buildWalletRegistry();
 
-const pendingTransactions = new Map<string, MultisigTransaction>();
+// FE-037 – Shared durable storage; tests may swap it via the helpers below.
+let transactions: MultisigRepository<MultisigTransaction> =
+  new FileMultisigRepository<MultisigTransaction>(resolveMultisigStoreDir());
+
+/** Case-insensitive address comparison (checksummed vs. lower-case input). */
+function sameAddress(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
 
 // ---------------------------------------------------------------------------
 // #1198 – Per-wallet nonce tracking
@@ -413,14 +434,17 @@ export async function proposeTransaction(
       ? txData.expiry
       : Math.floor(Date.now() / 1000) + DEFAULT_EXPIRY_DURATION_SECS);
 
-  pendingTransactions.set(txId, {
+  const createdAt = new Date().toISOString();
+  await transactions.create({
     id: txId,
     walletId,
     data: txData,
     proposer,
     signatures: [],
     status: "Pending",
-    createdAt: new Date().toISOString(),
+    createdAt,
+    updatedAt: createdAt,
+    version: 1,
     chainId,
     walletAddress,
     nonce,
@@ -593,17 +617,21 @@ export async function collectSignature(
   owner: string,
   signature: string,
 ): Promise<MultisigTransaction> {
-  const tx = pendingTransactions.get(txId);
-  if (!tx) throw new Error("Transaction not found");
+  // The duplicate check and the append run under the transaction lock against
+  // the latest committed record, so racing approvals cannot both succeed.
+  return transactions.update(txId, (tx) => {
+    const wallet = getWallet(tx.walletId);
+    if (!wallet.owners.includes(owner)) {
+      throw new Error("Signer is not an owner of this multisig");
+    }
 
-  const wallet = getWallet(tx.walletId);
-  if (!wallet.owners.includes(owner)) {
-    throw new Error("Signer is not an owner of this multisig");
-  }
+    if (tx.signatures.some((s) => sameAddress(s.owner, owner))) {
+      throw new Error("Owner has already signed this transaction");
+    }
 
-  if (tx.signatures.find((s) => s.owner === owner)) {
-    throw new Error("Owner has already signed this transaction");
-  }
+    if (tx.status !== "Pending" && tx.status !== "Ready") {
+      throw new Error("Transaction already executed");
+    }
 
   // #1198 – Reject expired proposals
   if (Math.floor(Date.now() / 1000) > tx.expiry) {
@@ -614,27 +642,26 @@ export async function collectSignature(
   if (tx.signatures.length === 0) {
     const nonceKey = (tx.walletAddress ?? wallet.address).toLowerCase();
     const consumed = consumedNonces.get(nonceKey);
-    if (consumed && consumed.has(tx.nonce)) {
+    if (consumed?.has(tx.nonce)) {
       throw new Error("Nonce already consumed: this transaction cannot be authorized");
     }
   }
 
-  // #1198 – EIP-712 typed-data verification (replaces #1194 EIP-191 check)
+  // Verify the EIP-712 approval.
   const { domain, types, message } = buildTypedData(tx);
   verifyTypedDataSignature(domain, types, message, signature, owner);
 
-  // #1198 – Consume nonce on first valid signature to prevent replay
+  // Consume the nonce on the first valid signature.
   if (tx.signatures.length === 0) {
     const nonceKey = (tx.walletAddress ?? wallet.address).toLowerCase();
     const consumed = consumedNonces.get(nonceKey) ?? new Set<number>();
     consumed.add(tx.nonce);
     consumedNonces.set(nonceKey, consumed);
   }
-
-  tx.signatures.push({
-    owner,
-    signature,
-    timestamp: new Date().toISOString(),
+    tx.signatures.push({
+      owner,
+      signature,
+      timestamp: new Date().toISOString(),
   });
 
   tx.events.push({
@@ -647,6 +674,7 @@ export async function collectSignature(
   }
 
   return tx;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -683,89 +711,104 @@ export async function processTransaction(
   executor?: string,
   receipt?: BroadcastReceipt,
 ): Promise<MultisigTransaction> {
-  const tx = pendingTransactions.get(txId);
-  if (!tx) throw new Error("Transaction not found");
+  return transactions.update(txId, (tx) => {
+    const terminalStatuses: MultisigTransactionStatus[] = [
+      "Executed",
+      "Confirmed",
+      "Failed",
+    ];
+    if (terminalStatuses.includes(tx.status)) {
+      throw new Error("Transaction already executed");
+    }
 
-  const terminalStatuses: MultisigTransactionStatus[] = [
-    "Executed",
-    "Confirmed",
-    "Failed",
-  ];
-  if (terminalStatuses.includes(tx.status)) {
-    throw new Error("Transaction already executed");
-  }
+    const wallet = getWallet(tx.walletId);
 
-  const wallet = getWallet(tx.walletId);
+    if (tx.signatures.length < wallet.threshold) {
+      throw new Error(
+        `Insufficient signatures. Required: ${wallet.threshold}, Current: ${tx.signatures.length}`,
+      );
+    }
 
-  if (tx.signatures.length < wallet.threshold) {
-    throw new Error(
-      `Insufficient signatures. Required: ${wallet.threshold}, Current: ${tx.signatures.length}`,
-    );
-  }
+    const resolvedExecutor = executor?.trim() || tx.proposer;
+    if (!wallet.owners.includes(resolvedExecutor)) {
+      throw new Error("Executor is not an owner of this multisig");
+    }
 
-  const resolvedExecutor = executor?.trim() || tx.proposer;
-  if (!wallet.owners.includes(resolvedExecutor)) {
-    throw new Error("Executor is not an owner of this multisig");
-  }
+    // -------------------------------------------------------------------------
+    // Simulation path (dev / test only)
+    // -------------------------------------------------------------------------
+    const simulate =
+      process.env.NEXT_PUBLIC_MULTISIG_SIMULATE === "true" &&
+      process.env.NODE_ENV !== "production";
 
-  // -------------------------------------------------------------------------
-  // Simulation path (dev / test only)
-  // -------------------------------------------------------------------------
-  const simulate =
-    process.env.NEXT_PUBLIC_MULTISIG_SIMULATE === "true" &&
-    process.env.NODE_ENV !== "production";
+    if (simulate && !receipt) {
+      tx.status = "Executed";
+      tx.executedAt = new Date().toISOString();
+      // No txHash — simulation never invents a chain hash.
+      tx.events.push({
+        name: "TransactionExecuted",
+        args: { txId, executor: resolvedExecutor },
+      });
+      return tx;
+    }
 
-  if (simulate && !receipt) {
-    tx.status = "Executed";
+    // -------------------------------------------------------------------------
+    // Production path — receipt is required
+    // -------------------------------------------------------------------------
+    if (!receipt) {
+      throw new Error(
+        "A broadcast receipt is required to execute a multisig transaction in production. " +
+          "Set NEXT_PUBLIC_MULTISIG_SIMULATE=true to enable simulation mode in development.",
+      );
+    }
+
+    // Mark as submitted first so the caller can observe this state if it persists
+    // the transaction before the receipt is applied.
+    tx.status = "Submitted";
+    tx.txHash = receipt.txHash;
+
+    if (receipt.status === "failed") {
+      tx.status = "Failed";
+      tx.events.push({
+        name: "TransactionRejected",
+        args: { txId },
+      });
+      return tx;
+    }
+
+    // mined or confirmed
+    tx.status = receipt.status === "confirmed" ? "Confirmed" : "Mined";
     tx.executedAt = new Date().toISOString();
-    // No txHash — simulation never invents a chain hash.
+    if (receipt.blockNumber !== undefined) {
+      tx.blockNumber = receipt.blockNumber;
+    }
     tx.events.push({
       name: "TransactionExecuted",
       args: { txId, executor: resolvedExecutor },
-    });
-    return tx;
-  }
-
-  // -------------------------------------------------------------------------
-  // Production path — receipt is required
-  // -------------------------------------------------------------------------
-  if (!receipt) {
-    throw new Error(
-      "A broadcast receipt is required to execute a multisig transaction in production. " +
-      "Set NEXT_PUBLIC_MULTISIG_SIMULATE=true to enable simulation mode in development.",
-    );
-  }
-
-  // Mark as submitted first so the caller can observe this state if it persists
-  // the transaction before the receipt is applied.
-  tx.status = "Submitted";
-  tx.txHash = receipt.txHash;
-
-  if (receipt.status === "failed") {
-    tx.status = "Failed";
-    tx.events.push({
-      name: "TransactionRejected",
-      args: { txId },
-    });
-    return tx;
-  }
-
   // mined or confirmed
   tx.status = receipt.status === "confirmed" ? "Confirmed" : "Mined";
   tx.executedAt = new Date().toISOString();
+
   if (receipt.blockNumber !== undefined) {
     tx.blockNumber = receipt.blockNumber;
   }
+
   tx.events.push({
     name: "TransactionExecuted",
     args: { txId, executor: resolvedExecutor },
   });
 
   return tx;
+  });
+
+  return tx;
+  });
 }
 
-export function getTransactionStatus(txId: string): MultisigTransaction {
-  const tx = pendingTransactions.get(txId);
+export async function getTransactionStatus(
+  txId: string,
+): Promise<MultisigTransaction> {
+  const tx = await transactions.get(txId);
   if (!tx) throw new Error("Transaction not found");
   return tx;
 }
@@ -774,9 +817,10 @@ export function getTransactionStatus(txId: string): MultisigTransaction {
 // Test helpers
 // ---------------------------------------------------------------------------
 
-/** Test helper — clears in-memory state between Vitest cases. */
+/** Test helper — clears persisted state between Vitest cases. */
 export function __resetMultisigStoreForTests(): void {
   pendingTransactions.clear();
+  transactions.clear();
   walletNonces.clear();
   consumedNonces.clear();
   MULTISIG_WALLETS = buildWalletRegistry();
@@ -790,4 +834,12 @@ export function __setMultisigWalletsForTests(
   wallets: Record<string, MultisigWallet>,
 ): void {
   MULTISIG_WALLETS = wallets;
+}
+
+/**
+ * Test helper — point this module instance at a specific storage directory.
+ * Two module instances sharing one directory model two server workers.
+ */
+export function __setMultisigStoreDirForTests(dir: string): void {
+  transactions = new FileMultisigRepository<MultisigTransaction>(dir);
 }
