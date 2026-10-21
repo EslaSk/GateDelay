@@ -79,7 +79,7 @@ const VALID_REGISTRY = JSON.stringify({
 const VALID_TX_HASH = "0x" + "ab".repeat(32);
 
 async function signDigest(txId: string, wallet: ethers.Signer): Promise<string> {
-  const tx = getTransactionStatus(txId);
+  const tx = await getTransactionStatus(txId);
   const digest = buildTransactionDigest(tx);
   return wallet.signMessage(ethers.getBytes(digest));
 }
@@ -248,7 +248,7 @@ describe("#1194 collectSignature cryptographic verification", () => {
     // Mutate the transaction data after signing to simulate an altered payload.
     // We test verifyOwnerSignature directly here to confirm it uses the digest
     // built at the time of verification (not at sign time).
-    const tx = getTransactionStatus(txId);
+    const tx = await getTransactionStatus(txId);
     const alteredTx = { ...tx, data: { target: "0x0000000000000000000000000000000000000000", value: "999", data: "0xmalicious" } };
     const alteredDigest = buildTransactionDigest(alteredTx as typeof tx);
 

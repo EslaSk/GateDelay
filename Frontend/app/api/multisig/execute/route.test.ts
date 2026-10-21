@@ -64,7 +64,7 @@ async function signTx(
   txId: string,
   signer: ethers.Wallet | ethers.HDNodeWallet,
 ): Promise<string> {
-  const tx = getTransactionStatus(txId);
+  const tx = await getTransactionStatus(txId);
   const digest = buildTransactionDigest(tx);
   return signer.signMessage(ethers.getBytes(digest));
 }

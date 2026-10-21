@@ -25,6 +25,7 @@
  *    - Retries load from eventModel, not from an in-memory map.
  */
 
+import { ConfigService } from '@nestjs/config';
 import { BadRequestException } from '@nestjs/common';
 import { createHmac } from 'crypto';
 import { WebhookPayload } from './webhook.entity';
@@ -74,6 +75,7 @@ function makeEventDoc(overrides: Partial<Record<string, unknown>> = {}) {
 // ─── Factory to build the service with controlled fakes ─────────────────────
 
 function buildService(opts: {
+  secret?: string;
   /** What findOne returns for the first call (dedup check) */
   findOneDedup?: unknown;
   /** What findOne returns for the post-attempt reload */
@@ -86,23 +88,25 @@ function buildService(opts: {
   getMarket?: () => Record<string, unknown> | undefined;
   maxAttempts?: number;
 }) {
-  const secret = 'test-webhook-secret';
+  const secret = opts.secret ?? 'test-webhook-secret';
   process.env.WEBHOOK_SECRET = secret;
   process.env.WEBHOOK_TIMESTAMP_WINDOW_MS = '300000';
   process.env.WEBHOOK_MAX_ATTEMPTS = String(opts.maxAttempts ?? 3);
 
-  const liveDoc = opts.liveDoc ?? makeEventDoc();
+  const liveDoc = opts.liveDoc ?? makeEventDoc({ maxAttempts: opts.maxAttempts ?? 3 });
 
   const eventModel = {
-    findOne: jest.fn().mockImplementation(() => ({
-      exec: jest.fn()
-        // 1st call → dedup check
-        .mockResolvedValueOnce(opts.findOneDedup ?? null)
-        // 2nd call → post-attempt reload
-        .mockResolvedValue(opts.findOneReload ?? liveDoc),
+    findOne: jest.fn().mockImplementation((query: Record<string, unknown>) => ({
+      exec: jest.fn().mockResolvedValue(
+        'deduplicationKey' in query
+          ? opts.findOneDedup ?? null
+          : opts.findOneReload ?? liveDoc,
+      ),
       lean: jest.fn().mockReturnThis(),
     })),
-    create: jest.fn().mockResolvedValue(liveDoc),
+    create: jest.fn().mockImplementation(async (fields: Record<string, unknown>) =>
+      Object.assign(liveDoc, fields),
+    ),
     find: jest.fn().mockReturnValue({
       sort: jest.fn().mockReturnThis(),
       limit: jest.fn().mockReturnThis(),
@@ -131,6 +135,7 @@ function buildService(opts: {
     eventModel as any,
     attemptModel as any,
     marketResolver as any,
+    new ConfigService(process.env),
   );
 
   return { service, eventModel, attemptModel, marketResolver, secret };
@@ -145,15 +150,32 @@ describe('WebhookService — ingress validation', () => {
     delete process.env.WEBHOOK_MAX_ATTEMPTS;
   });
 
+  it('verifies the original bytes rather than re-serialised JSON', () => {
+    const { service, secret } = buildService({});
+    const timestamp = String(Date.now());
+    const raw = Buffer.from('{ "marketId": "market-1" }');
+    const signature = createHmac('sha256', secret)
+      .update(`${timestamp}.`).update(raw).digest('hex');
+    expect(service.validateWebhookSignature(raw, signature, timestamp)).toBe(true);
+    expect(service.validateWebhookSignature(
+      Buffer.from('{"marketId":"market-1"}'), signature, timestamp,
+    )).toBe(false);
+  });
+
+  it('rejects missing secrets at startup', () => {
+    const { service } = buildService({ secret: '' });
+    expect(() => service.onModuleInit()).toThrow();
+  });
+
   it('processes a valid signature inside the timestamp window', async () => {
     const payload = makePayload();
     const { service, secret } = buildService({});
     const timestamp = String(Date.now());
 
     const status = await service.processWebhook(
-      payload,
+      Buffer.from(JSON.stringify(payload)),
       sign(payload, timestamp, secret),
-      timestamp,
+      timestamp, 'provider-event-1',
     );
 
     expect(status.status).toBe('processed');
@@ -167,9 +189,9 @@ describe('WebhookService — ingress validation', () => {
 
     await expect(
       service.processWebhook(
-        payload,
+        Buffer.from(JSON.stringify(payload)),
         sign({ ...payload, marketId: 'other-market' }, timestamp, secret),
-        timestamp,
+        timestamp, 'provider-event-1',
       ),
     ).rejects.toThrow(BadRequestException);
   });
@@ -181,9 +203,9 @@ describe('WebhookService — ingress validation', () => {
 
     await expect(
       service.processWebhook(
-        payload,
+        Buffer.from(JSON.stringify(payload)),
         sign(payload, timestamp, secret),
-        timestamp,
+        timestamp, 'provider-event-1',
       ),
     ).rejects.toThrow(BadRequestException);
   });
@@ -257,6 +279,18 @@ describe('Fix 1 — internal retries bypass sender timestamp window', () => {
 // ─── Fix 2: automatic retries + dead-letter ──────────────────────────────────
 
 describe('Fix 2 — durable queue with bounded retries and dead-letter', () => {
+  it('keeps the attempt count when a dead-lettered event is retried', async () => {
+    const doc = makeEventDoc({ status: 'dead_letter', attemptCount: 3 });
+    const { service, eventModel, attemptModel } = buildService({ liveDoc: doc });
+    eventModel.findOne.mockReturnValue({
+      exec: jest.fn().mockResolvedValue(doc),
+      lean: jest.fn().mockReturnThis(),
+    });
+    await expect(service.retryWebhook('evt-1')).rejects.toThrow(BadRequestException);
+    expect(doc.attemptCount).toBe(3);
+    expect(attemptModel.create).not.toHaveBeenCalled();
+  });
+
   afterEach(() => {
     delete process.env.WEBHOOK_SECRET;
     delete process.env.WEBHOOK_TIMESTAMP_WINDOW_MS;
@@ -275,9 +309,9 @@ describe('Fix 2 — durable queue with bounded retries and dead-letter', () => {
     const timestamp = String(Date.now());
 
     const status = await service.processWebhook(
-      payload,
+      Buffer.from(JSON.stringify(payload)),
       sign(payload, timestamp, secret),
-      timestamp,
+      timestamp, 'provider-event-1',
     );
 
     // After 1 transient failure with 3 maxAttempts, the event should be
@@ -302,9 +336,9 @@ describe('Fix 2 — durable queue with bounded retries and dead-letter', () => {
     const timestamp = String(Date.now());
 
     const status = await service.processWebhook(
-      payload,
+      Buffer.from(JSON.stringify(payload)),
       sign(payload, timestamp, secret),
-      timestamp,
+      timestamp, 'provider-event-1',
     );
 
     expect(status.status).toBe('dead_letter');
@@ -321,9 +355,9 @@ describe('Fix 2 — durable queue with bounded retries and dead-letter', () => {
     const timestamp = String(Date.now());
 
     await service.processWebhook(
-      payload,
+      Buffer.from(JSON.stringify(payload)),
       sign(payload, timestamp, secret),
-      timestamp,
+      timestamp, 'provider-event-1',
     );
 
     expect(attemptModel.create).toHaveBeenCalledWith(
@@ -342,9 +376,9 @@ describe('Fix 2 — durable queue with bounded retries and dead-letter', () => {
     const timestamp = String(Date.now());
 
     const status = await service.processWebhook(
-      payload,
+      Buffer.from(JSON.stringify(payload)),
       sign(payload, timestamp, secret),
-      timestamp,
+      timestamp, 'provider-event-1',
     );
 
     // Permanent error → dead_letter immediately, no retry scheduled
@@ -366,7 +400,7 @@ describe('Fix 3 — real market creation via MarketResolverService', () => {
     const { service, secret, marketResolver } = buildService({});
     const timestamp = String(Date.now());
 
-    await service.processWebhook(payload, sign(payload, timestamp, secret), timestamp);
+    await service.processWebhook(Buffer.from(JSON.stringify(payload)), sign(payload, timestamp, secret), timestamp, 'provider-event-1');
 
     expect(marketResolver.registerMarket).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -386,9 +420,9 @@ describe('Fix 3 — real market creation via MarketResolverService', () => {
     const timestamp = String(Date.now());
 
     const status = await service.processWebhook(
-      payload,
+      Buffer.from(JSON.stringify(payload)),
       sign(payload, timestamp, secret),
-      timestamp,
+      timestamp, 'provider-event-1',
     );
 
     expect(status.resultMarketId).toBe('market-1');
@@ -405,9 +439,9 @@ describe('Fix 3 — real market creation via MarketResolverService', () => {
     const timestamp = String(Date.now());
 
     const status = await service.processWebhook(
-      payload,
+      Buffer.from(JSON.stringify(payload)),
       sign(payload, timestamp, secret),
-      timestamp,
+      timestamp, 'provider-event-1',
     );
 
     expect(status.status).not.toBe('processed');
@@ -420,9 +454,9 @@ describe('Fix 3 — real market creation via MarketResolverService', () => {
     const timestamp = String(Date.now());
 
     const status = await service.processWebhook(
-      payload,
+      Buffer.from(JSON.stringify(payload)),
       sign(payload, timestamp, secret),
-      timestamp,
+      timestamp, 'provider-event-1',
     );
 
     // Bad payload is a permanent error → dead_letter
@@ -444,7 +478,7 @@ describe('Fix 4 — durable storage: DB calls on every ingress and attempt', () 
     const { service, secret, eventModel } = buildService({});
     const timestamp = String(Date.now());
 
-    await service.processWebhook(payload, sign(payload, timestamp, secret), timestamp);
+    await service.processWebhook(Buffer.from(JSON.stringify(payload)), sign(payload, timestamp, secret), timestamp, 'provider-event-1');
 
     expect(eventModel.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -460,7 +494,7 @@ describe('Fix 4 — durable storage: DB calls on every ingress and attempt', () 
     const { service, secret, attemptModel } = buildService({});
     const timestamp = String(Date.now());
 
-    await service.processWebhook(payload, sign(payload, timestamp, secret), timestamp);
+    await service.processWebhook(Buffer.from(JSON.stringify(payload)), sign(payload, timestamp, secret), timestamp, 'provider-event-1');
 
     expect(attemptModel.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -485,9 +519,9 @@ describe('Fix 4 — durable storage: DB calls on every ingress and attempt', () 
     });
 
     const status = await service.processWebhook(
-      payload,
+      Buffer.from(JSON.stringify(payload)),
       sign(payload, timestamp, secret),
-      timestamp,
+      timestamp, 'provider-event-1',
     );
 
     // Returns current status without creating a new document

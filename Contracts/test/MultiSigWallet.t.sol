@@ -278,4 +278,109 @@ contract MultiSigWalletTest is Test {
         (bool success,) = address(wallet).call{value: 1 ether}("");
         assertTrue(success);
     }
+
+    function test_RemovedSignerApprovalDoesNotCount() public {
+        vm.prank(signer1);
+        uint256 txId = wallet.createTransaction(target, 0, "");
+
+        vm.prank(signer1);
+        wallet.approveTransaction(txId);
+
+        vm.prank(signer2);
+        wallet.removeSigner(signer1);
+
+        vm.prank(signer2);
+        wallet.approveTransaction(txId);
+
+        MultiSigWallet.Transaction memory txn = wallet.getTransaction(txId);
+        assertEq(uint256(txn.status), uint256(MultiSigWallet.TransactionStatus.PENDING));
+        assertEq(txn.approvalCount, 1);
+
+        vm.prank(signer2);
+        vm.expectRevert(MultiSigWallet.InsufficientApprovals.selector);
+        wallet.executeTransaction(txId);
+
+        vm.prank(signer3);
+        wallet.approveTransaction(txId);
+
+        txn = wallet.getTransaction(txId);
+        assertEq(uint256(txn.status), uint256(MultiSigWallet.TransactionStatus.APPROVED));
+        assertEq(txn.approvalCount, 2);
+    }
+
+    function test_ExecuteRevertsWhenApproverRemovedAfterReady() public {
+        vm.prank(signer1);
+        uint256 txId = wallet.createTransaction(target, 0, "");
+
+        vm.prank(signer1);
+        wallet.approveTransaction(txId);
+        vm.prank(signer2);
+        wallet.approveTransaction(txId);
+
+        vm.prank(signer3);
+        wallet.removeSigner(signer1);
+
+        vm.prank(signer2);
+        vm.expectRevert(MultiSigWallet.InsufficientApprovals.selector);
+        wallet.executeTransaction(txId);
+
+        vm.prank(signer3);
+        wallet.approveTransaction(txId);
+
+        vm.prank(signer2);
+        wallet.executeTransaction(txId);
+
+        MultiSigWallet.Transaction memory txn = wallet.getTransaction(txId);
+        assertEq(uint256(txn.status), uint256(MultiSigWallet.TransactionStatus.EXECUTED));
+        assertEq(txn.approvalCount, 2);
+    }
+
+    function test_ReaddedSignerMustApproveAgain() public {
+        vm.prank(signer1);
+        uint256 txId = wallet.createTransaction(target, 0, "");
+
+        vm.prank(signer1);
+        wallet.approveTransaction(txId);
+        vm.prank(signer2);
+        wallet.approveTransaction(txId);
+
+        vm.prank(signer3);
+        wallet.removeSigner(signer1);
+
+        vm.prank(signer2);
+        wallet.addSigner(signer1);
+
+        vm.prank(signer2);
+        vm.expectRevert(MultiSigWallet.InsufficientApprovals.selector);
+        wallet.executeTransaction(txId);
+
+        vm.prank(signer1);
+        wallet.approveTransaction(txId);
+
+        vm.prank(signer2);
+        wallet.executeTransaction(txId);
+
+        MultiSigWallet.Transaction memory txn = wallet.getTransaction(txId);
+        assertEq(uint256(txn.status), uint256(MultiSigWallet.TransactionStatus.EXECUTED));
+    }
+
+    function test_RemovingNonApproverKeepsReadyTransaction() public {
+        vm.prank(signer1);
+        uint256 txId = wallet.createTransaction(target, 0, "");
+
+        vm.prank(signer1);
+        wallet.approveTransaction(txId);
+        vm.prank(signer2);
+        wallet.approveTransaction(txId);
+
+        vm.prank(signer1);
+        wallet.removeSigner(signer3);
+
+        vm.prank(signer1);
+        wallet.executeTransaction(txId);
+
+        MultiSigWallet.Transaction memory txn = wallet.getTransaction(txId);
+        assertEq(uint256(txn.status), uint256(MultiSigWallet.TransactionStatus.EXECUTED));
+        assertEq(txn.approvalCount, 2);
+    }
 }

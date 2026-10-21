@@ -1,5 +1,5 @@
 /**
- * In-memory multisig store for Next.js API routes.
+ * Durable multisig store for Next.js API routes.
  * Mirrors Backend/services/multisigService.js for frontend integration.
  *
  * Contract events are taken from `Contracts/src/MultiSigWallet.sol`:
@@ -22,6 +22,12 @@
  *          `failed`, and `confirmed` states using a receipt returned by the
  *          caller; simulation is gated behind
  *          `NEXT_PUBLIC_MULTISIG_SIMULATE=true`.
+ *
+ * FE-037 – Proposals, signatures, and audit events are persisted through
+ *          `FileMultisigRepository` instead of a module-level Map, so they
+ *          survive restarts and are shared by every worker using the same
+ *          `MULTISIG_STORE_DIR`.  Each mutation runs under a per-transaction
+ *          lock, so concurrent approvals cannot record one owner twice.
  */
 
 import { ethers } from "ethers";
@@ -29,6 +35,11 @@ import {
   parseDeploymentRegistry,
   type DeploymentEntry,
 } from "./deploymentRegistry";
+import {
+  FileMultisigRepository,
+  resolveMultisigStoreDir,
+  type MultisigRepository,
+} from "./multisigRepository";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -94,6 +105,10 @@ export interface MultisigTransaction {
   signatures: MultisigSignature[];
   status: MultisigTransactionStatus;
   createdAt: string;
+  /** Last committed change; set by the repository. */
+  updatedAt: string;
+  /** Revision counter incremented on every committed change. */
+  version: number;
   executedAt?: string;
   /** Real transaction hash from the chain; undefined until broadcast confirms. */
   txHash?: string;
@@ -262,7 +277,14 @@ function buildWalletRegistry(): Record<string, MultisigWallet> {
 // Initialised once per process; tests may call __resetMultisigStoreForTests.
 let MULTISIG_WALLETS: Record<string, MultisigWallet> = buildWalletRegistry();
 
-const pendingTransactions = new Map<string, MultisigTransaction>();
+// FE-037 – Shared durable storage; tests may swap it via the helpers below.
+let transactions: MultisigRepository<MultisigTransaction> =
+  new FileMultisigRepository<MultisigTransaction>(resolveMultisigStoreDir());
+
+/** Case-insensitive address comparison (checksummed vs. lower-case input). */
+function sameAddress(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
 
 // ---------------------------------------------------------------------------
 // Public store API
@@ -302,14 +324,17 @@ export async function proposeTransaction(
       ? txData.target
       : wallet.address;
 
-  pendingTransactions.set(txId, {
+  const createdAt = new Date().toISOString();
+  await transactions.create({
     id: txId,
     walletId,
     data: txData,
     proposer,
     signatures: [],
     status: "Pending",
-    createdAt: new Date().toISOString(),
+    createdAt,
+    updatedAt: createdAt,
+    version: 1,
     events: [
       {
         name: "TransactionCreated",
@@ -400,26 +425,30 @@ export async function collectSignature(
   owner: string,
   signature: string,
 ): Promise<MultisigTransaction> {
-  const tx = pendingTransactions.get(txId);
-  if (!tx) throw new Error("Transaction not found");
+  // The duplicate check and the append run under the transaction lock against
+  // the latest committed record, so racing approvals cannot both succeed.
+  return transactions.update(txId, (tx) => {
+    const wallet = getWallet(tx.walletId);
+    if (!wallet.owners.includes(owner)) {
+      throw new Error("Signer is not an owner of this multisig");
+    }
 
-  const wallet = getWallet(tx.walletId);
-  if (!wallet.owners.includes(owner)) {
-    throw new Error("Signer is not an owner of this multisig");
-  }
+    if (tx.signatures.some((s) => sameAddress(s.owner, owner))) {
+      throw new Error("Owner has already signed this transaction");
+    }
 
-  if (tx.signatures.find((s) => s.owner === owner)) {
-    throw new Error("Owner has already signed this transaction");
-  }
+    if (tx.status !== "Pending" && tx.status !== "Ready") {
+      throw new Error("Transaction already executed");
+    }
 
-  // #1194 – Cryptographic verification before accepting the signature.
-  const digest = buildTransactionDigest(tx);
-  verifyOwnerSignature(digest, signature, owner);
+    // #1194 – Cryptographic verification before accepting the signature.
+    const digest = buildTransactionDigest(tx);
+    verifyOwnerSignature(digest, signature, owner);
 
-  tx.signatures.push({
-    owner,
-    signature,
-    timestamp: new Date().toISOString(),
+    tx.signatures.push({
+      owner,
+      signature,
+      timestamp: new Date().toISOString(),
   });
 
   tx.events.push({
@@ -432,6 +461,7 @@ export async function collectSignature(
   }
 
   return tx;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -468,89 +498,90 @@ export async function processTransaction(
   executor?: string,
   receipt?: BroadcastReceipt,
 ): Promise<MultisigTransaction> {
-  const tx = pendingTransactions.get(txId);
-  if (!tx) throw new Error("Transaction not found");
+  return transactions.update(txId, (tx) => {
+    const terminalStatuses: MultisigTransactionStatus[] = [
+      "Executed",
+      "Confirmed",
+      "Failed",
+    ];
+    if (terminalStatuses.includes(tx.status)) {
+      throw new Error("Transaction already executed");
+    }
 
-  const terminalStatuses: MultisigTransactionStatus[] = [
-    "Executed",
-    "Confirmed",
-    "Failed",
-  ];
-  if (terminalStatuses.includes(tx.status)) {
-    throw new Error("Transaction already executed");
-  }
+    const wallet = getWallet(tx.walletId);
 
-  const wallet = getWallet(tx.walletId);
+    if (tx.signatures.length < wallet.threshold) {
+      throw new Error(
+        `Insufficient signatures. Required: ${wallet.threshold}, Current: ${tx.signatures.length}`,
+      );
+    }
 
-  if (tx.signatures.length < wallet.threshold) {
-    throw new Error(
-      `Insufficient signatures. Required: ${wallet.threshold}, Current: ${tx.signatures.length}`,
-    );
-  }
+    const resolvedExecutor = executor?.trim() || tx.proposer;
+    if (!wallet.owners.includes(resolvedExecutor)) {
+      throw new Error("Executor is not an owner of this multisig");
+    }
 
-  const resolvedExecutor = executor?.trim() || tx.proposer;
-  if (!wallet.owners.includes(resolvedExecutor)) {
-    throw new Error("Executor is not an owner of this multisig");
-  }
+    // -------------------------------------------------------------------------
+    // Simulation path (dev / test only)
+    // -------------------------------------------------------------------------
+    const simulate =
+      process.env.NEXT_PUBLIC_MULTISIG_SIMULATE === "true" &&
+      process.env.NODE_ENV !== "production";
 
-  // -------------------------------------------------------------------------
-  // Simulation path (dev / test only)
-  // -------------------------------------------------------------------------
-  const simulate =
-    process.env.NEXT_PUBLIC_MULTISIG_SIMULATE === "true" &&
-    process.env.NODE_ENV !== "production";
+    if (simulate && !receipt) {
+      tx.status = "Executed";
+      tx.executedAt = new Date().toISOString();
+      // No txHash — simulation never invents a chain hash.
+      tx.events.push({
+        name: "TransactionExecuted",
+        args: { txId, executor: resolvedExecutor },
+      });
+      return tx;
+    }
 
-  if (simulate && !receipt) {
-    tx.status = "Executed";
+    // -------------------------------------------------------------------------
+    // Production path — receipt is required
+    // -------------------------------------------------------------------------
+    if (!receipt) {
+      throw new Error(
+        "A broadcast receipt is required to execute a multisig transaction in production. " +
+          "Set NEXT_PUBLIC_MULTISIG_SIMULATE=true to enable simulation mode in development.",
+      );
+    }
+
+    // Mark as submitted first so the caller can observe this state if it persists
+    // the transaction before the receipt is applied.
+    tx.status = "Submitted";
+    tx.txHash = receipt.txHash;
+
+    if (receipt.status === "failed") {
+      tx.status = "Failed";
+      tx.events.push({
+        name: "TransactionRejected",
+        args: { txId },
+      });
+      return tx;
+    }
+
+    // mined or confirmed
+    tx.status = receipt.status === "confirmed" ? "Confirmed" : "Mined";
     tx.executedAt = new Date().toISOString();
-    // No txHash — simulation never invents a chain hash.
+    if (receipt.blockNumber !== undefined) {
+      tx.blockNumber = receipt.blockNumber;
+    }
     tx.events.push({
       name: "TransactionExecuted",
       args: { txId, executor: resolvedExecutor },
-    });
-    return tx;
-  }
-
-  // -------------------------------------------------------------------------
-  // Production path — receipt is required
-  // -------------------------------------------------------------------------
-  if (!receipt) {
-    throw new Error(
-      "A broadcast receipt is required to execute a multisig transaction in production. " +
-        "Set NEXT_PUBLIC_MULTISIG_SIMULATE=true to enable simulation mode in development.",
-    );
-  }
-
-  // Mark as submitted first so the caller can observe this state if it persists
-  // the transaction before the receipt is applied.
-  tx.status = "Submitted";
-  tx.txHash = receipt.txHash;
-
-  if (receipt.status === "failed") {
-    tx.status = "Failed";
-    tx.events.push({
-      name: "TransactionRejected",
-      args: { txId },
-    });
-    return tx;
-  }
-
-  // mined or confirmed
-  tx.status = receipt.status === "confirmed" ? "Confirmed" : "Mined";
-  tx.executedAt = new Date().toISOString();
-  if (receipt.blockNumber !== undefined) {
-    tx.blockNumber = receipt.blockNumber;
-  }
-  tx.events.push({
-    name: "TransactionExecuted",
-    args: { txId, executor: resolvedExecutor },
   });
 
   return tx;
+  });
 }
 
-export function getTransactionStatus(txId: string): MultisigTransaction {
-  const tx = pendingTransactions.get(txId);
+export async function getTransactionStatus(
+  txId: string,
+): Promise<MultisigTransaction> {
+  const tx = await transactions.get(txId);
   if (!tx) throw new Error("Transaction not found");
   return tx;
 }
@@ -559,9 +590,9 @@ export function getTransactionStatus(txId: string): MultisigTransaction {
 // Test helpers
 // ---------------------------------------------------------------------------
 
-/** Test helper — clears in-memory state between Vitest cases. */
+/** Test helper — clears persisted state between Vitest cases. */
 export function __resetMultisigStoreForTests(): void {
-  pendingTransactions.clear();
+  transactions.clear();
   MULTISIG_WALLETS = buildWalletRegistry();
 }
 
@@ -573,4 +604,12 @@ export function __setMultisigWalletsForTests(
   wallets: Record<string, MultisigWallet>,
 ): void {
   MULTISIG_WALLETS = wallets;
+}
+
+/**
+ * Test helper — point this module instance at a specific storage directory.
+ * Two module instances sharing one directory model two server workers.
+ */
+export function __setMultisigStoreDirForTests(dir: string): void {
+  transactions = new FileMultisigRepository<MultisigTransaction>(dir);
 }

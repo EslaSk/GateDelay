@@ -51,7 +51,7 @@ function buildApprovalMsg(fields: {
     'tokenAddress',
     'withdrawalId',
   ] as const;
-  return JSON.stringify(fields, KEY_ORDER);
+  return JSON.stringify(fields, [...KEY_ORDER]);
 }
 
 const AMOUNT = '1000000000000000000'; // 1 ETH in wei
@@ -387,15 +387,15 @@ describe('WithdrawalService', () => {
     });
 
     it('rejects a valid signature submitted after the expiry timestamp', async () => {
-      // Create a withdrawal with an already-past expiry.
-      const pastExpiry = Math.floor(Date.now() / 1000) - 1;
+      // Create and sign a valid intent, then submit it after it expires.
+      const expiry = Math.floor(Date.now() / 1000) + 60;
       const { withdrawalId, record } = service.initiateWithdrawal(USER_ID, {
         fromAddress: walletA.address,
         toAddress: walletB.address,
         tokenAddress: 'NATIVE',
         amount: AMOUNT,
         chainId: CHAIN_ID,
-        expiry: pastExpiry,
+        expiry,
         multiSigThreshold: 1,
         multiSigSigners: [walletA.address, walletB.address],
       });
@@ -403,14 +403,17 @@ describe('WithdrawalService', () => {
       const { message } = service.buildApprovalMessage(record);
       const sig = await sign(walletA, message);
 
-      await expect(
-        Promise.resolve(
+      const clock = jest.spyOn(Date, 'now').mockReturnValue((expiry + 1) * 1000);
+      try {
+        expect(() =>
           service.addMultiSigSignature(withdrawalId, USER_ID, {
             signerAddress: walletA.address,
             signature: sig,
           }),
-        ),
-      ).rejects.toThrow(BadRequestException);
+        ).toThrow(BadRequestException);
+      } finally {
+        clock.mockRestore();
+      }
     });
 
     it('requires chainId for multi-sig withdrawals', () => {
@@ -726,8 +729,6 @@ describe('WithdrawalService', () => {
         amount: AMOUNT,
       });
 
-      expect(service.listWithdrawals(USER_ID, { status: 'pending' })).toHaveLength(1);
-      expect(service.listWithdrawals(USER_ID, { status: 'confirmed' })).toHaveLength(0);
       const pending = service.listWithdrawals(USER_ID, { status: 'pending' });
       const confirmed = service.listWithdrawals(USER_ID, {
         status: 'confirmed',

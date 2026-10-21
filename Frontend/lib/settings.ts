@@ -80,6 +80,109 @@ export const DEFAULT_SETTINGS: UserSettings = {
 
 const STORAGE_KEY = SETTINGS_STORAGE_KEY;
 
+const SUPPORTED_THEMES: readonly Theme[] = ["light", "dark", "system"];
+const SUPPORTED_LANGUAGES = ["en", "es", "fr", "de", "zh", "ja"];
+const SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "JPY", "CNY"];
+const SUPPORTED_DATE_FORMATS = ["MM/DD/YYYY", "DD/MM/YYYY", "YYYY-MM-DD"];
+const SUPPORTED_TIME_FORMATS = ["12h", "24h"];
+const SUPPORTED_GAS_PREFERENCES = ["slow", "standard", "fast"];
+const MIN_SLIPPAGE = 0.1;
+const MAX_SLIPPAGE = 50;
+
+type FieldValidator = (value: unknown) => boolean;
+
+const isBoolean: FieldValidator = (value) => typeof value === "boolean";
+const oneOf = (allowed: readonly string[]): FieldValidator => (value) =>
+  typeof value === "string" && allowed.includes(value);
+const isSlippage: FieldValidator = (value) =>
+  typeof value === "number" &&
+  Number.isFinite(value) &&
+  value >= MIN_SLIPPAGE &&
+  value <= MAX_SLIPPAGE;
+
+const TOP_LEVEL_VALIDATORS: Record<string, FieldValidator> = {
+  theme: oneOf(SUPPORTED_THEMES),
+  language: oneOf(SUPPORTED_LANGUAGES),
+  currency: oneOf(SUPPORTED_CURRENCIES),
+  dateFormat: oneOf(SUPPORTED_DATE_FORMATS),
+  timeFormat: oneOf(SUPPORTED_TIME_FORMATS),
+};
+
+const CATEGORY_VALIDATORS: Record<string, Record<string, FieldValidator>> = {
+  notifications: {
+    email: isBoolean,
+    push: isBoolean,
+    priceAlerts: isBoolean,
+    marketUpdates: isBoolean,
+    tradeConfirmations: isBoolean,
+    newsletter: isBoolean,
+  },
+  trading: {
+    defaultSlippage: isSlippage,
+    confirmTransactions: isBoolean,
+    showAdvancedOptions: isBoolean,
+    autoApprove: isBoolean,
+    gasPreference: oneOf(SUPPORTED_GAS_PREFERENCES),
+  },
+  privacy: {
+    showProfile: isBoolean,
+    showPortfolio: isBoolean,
+    showActivity: isBoolean,
+    analyticsEnabled: isBoolean,
+  },
+  display: {
+    compactMode: isBoolean,
+    showBalances: isBoolean,
+    animationsEnabled: isBoolean,
+    soundEnabled: isBoolean,
+  },
+};
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function hasOwn(source: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(source, key);
+}
+
+/**
+ * Strict validation for user-supplied import documents (FE-012). Every key
+ * must be supported and every present value must match its type, enum, and
+ * range; omitted keys fall back to DEFAULT_SETTINGS. Returns null on any
+ * violation so callers can reject the whole document without mutating state.
+ */
+export function parseImportedSettings(parsed: unknown): UserSettings | null {
+  if (!isPlainObject(parsed)) return null;
+
+  const next: Record<string, unknown> = {};
+  for (const key of Object.keys(parsed)) {
+    const value = parsed[key];
+    const validate = hasOwn(TOP_LEVEL_VALIDATORS, key) ? TOP_LEVEL_VALIDATORS[key] : undefined;
+    if (validate) {
+      if (!validate(value)) return null;
+      next[key] = value;
+      continue;
+    }
+
+    const fields = hasOwn(CATEGORY_VALIDATORS, key) ? CATEGORY_VALIDATORS[key] : undefined;
+    if (!fields || !isPlainObject(value)) return null;
+    const category: Record<string, unknown> = {
+      ...(DEFAULT_SETTINGS[key as keyof UserSettings] as object),
+    };
+    for (const field of Object.keys(value)) {
+      const validateField = hasOwn(fields, field) ? fields[field] : undefined;
+      if (!validateField || !validateField(value[field])) return null;
+      category[field] = value[field];
+    }
+    next[key] = category;
+  }
+
+  return { ...DEFAULT_SETTINGS, ...next } as UserSettings;
+}
+
 /**
  * Single merge point for settings coming from persistence, so the initial
  * load, JSON import, and cross-tab `storage` events all reuse the same
@@ -160,14 +263,16 @@ export class SettingsService {
 
   importSettings(json: string): boolean {
     try {
-      const parsed = JSON.parse(json);
-      // Basic structural validation
-      if (parsed && typeof parsed === "object") {
-        this.settings = mergePersistedSettings(parsed);
-        this.saveAndNotify();
-        return true;
+      // Validate the whole document before touching state so a rejected
+      // import leaves both in-memory settings and localStorage unchanged.
+      const next = parseImportedSettings(JSON.parse(json));
+      if (!next) {
+        reportError("Failed to import settings", new Error("Unsupported or invalid settings document"));
+        return false;
       }
-      return false;
+      this.settings = next;
+      this.saveAndNotify();
+      return true;
     } catch (e) {
       reportError("Failed to import settings", e);
       return false;
@@ -270,21 +375,19 @@ export const settingsService = new SettingsService();
 export const settingsValidation = {
   slippage: (value: number): true | string => {
     if (isNaN(value)) return "Slippage must be a number";
-    if (value < 0.1 || value > 50) {
+    if (value < MIN_SLIPPAGE || value > MAX_SLIPPAGE) {
       return "Slippage must be between 0.1% and 50%";
     }
     return true;
   },
   language: (value: string): true | string => {
-    const validLanguages = ["en", "es", "fr", "de", "zh", "ja"];
-    if (!validLanguages.includes(value)) {
+    if (!SUPPORTED_LANGUAGES.includes(value)) {
       return "Unsupported language";
     }
     return true;
   },
   currency: (value: string): true | string => {
-    const validCurrencies = ["USD", "EUR", "GBP", "JPY", "CNY"];
-    if (!validCurrencies.includes(value)) {
+    if (!SUPPORTED_CURRENCIES.includes(value)) {
       return "Unsupported currency";
     }
     return true;

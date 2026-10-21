@@ -3,6 +3,11 @@ pragma solidity ^0.8.20;
 
 /// @title MultiSigWallet
 /// @notice Multi-signature wallet with support for multiple signers and approval requirements.
+/// @dev Approval policy: a transaction is ready only when at least `threshold` members of the
+///      current signer set have approved it under their current membership generation. Removing a
+///      signer increments that address's generation, so earlier approvals from that address no
+///      longer count, including if the address is added again. Readiness and execution recompute
+///      the count from the current signer array, which is bounded by the signer-set size.
 contract MultiSigWallet {
     // -------------------------------------------------------------------------
     // Custom errors
@@ -58,6 +63,10 @@ contract MultiSigWallet {
     mapping(uint256 => Transaction) public transactions;
     mapping(uint256 => mapping(address => bool)) public approvals;
     mapping(uint256 => mapping(address => bool)) public rejections;
+    /// @dev Incremented when an address is removed. Approvals store the generation they were cast under.
+    mapping(address => uint256) private signerMembership;
+    /// @dev Membership generation captured when `signer` approved `txId`.
+    mapping(uint256 => mapping(address => uint256)) private approvalMembership;
     uint256 public transactionCount;
 
     // -------------------------------------------------------------------------
@@ -103,6 +112,8 @@ contract MultiSigWallet {
     /// @notice Remove a signer from the wallet.
     /// @param signerToRemove The address of the signer to remove.
     /// @dev Access: Caller permissions are checked against the sender or assigned roles.
+    /// @dev Increments the removed address's membership generation so its approvals on pending
+    ///      transactions stop counting. Pending transactions are not scanned here.
     /// @dev Reverts: `NotSigner` if `!isSigner[msg.sender]` is true. `SignerNotFound` if
     ///     `!isSigner[signerToRemove]` is true. `InvalidThreshold` if `signers.length - 1 <
     ///     threshold` is true.
@@ -112,6 +123,8 @@ contract MultiSigWallet {
         if (signers.length - 1 < threshold) revert InvalidThreshold();
 
         isSigner[signerToRemove] = false;
+        // Drop this address's existing approvals without scanning pending transactions.
+        signerMembership[signerToRemove]++;
 
         for (uint256 i = 0; i < signers.length; i++) {
             if (signers[i] == signerToRemove) {
@@ -177,23 +190,34 @@ contract MultiSigWallet {
     /// @param txId The ID of the transaction to approve.
     /// @dev Access: Caller permissions are checked against the sender or assigned roles.
     /// @dev Reverts: `NotSigner` if `!isSigner[msg.sender]` is true. `TransactionNotFound` if `txId
-    ///     >= transactionCount` is true. `InvalidTransaction` if `transaction.status !=
-    ///     TransactionStatus.PENDING` is true. `InvalidTransaction` if
-    ///     `approvals[txId][msg.sender]` is true.
+    ///     >= transactionCount` is true. `TransactionNotPending` if the transaction is executed,
+    ///     rejected, or still ready under the current signer set. `InvalidTransaction` if the
+    ///     caller already has a current-generation approval.
     function approveTransaction(uint256 txId) external {
         if (!isSigner[msg.sender]) revert NotSigner();
         if (txId >= transactionCount) revert TransactionNotFound();
 
         Transaction storage transaction = transactions[txId];
-        if (transaction.status != TransactionStatus.PENDING) revert TransactionNotPending();
-        if (approvals[txId][msg.sender]) revert InvalidTransaction();
+        if (transaction.status == TransactionStatus.EXECUTED || transaction.status == TransactionStatus.REJECTED) {
+            revert TransactionNotPending();
+        }
+
+        // A ready transaction can fall below threshold after a signer is removed. Reopen it so a
+        // current signer can replace that approval. The recount touches only the current signer set.
+        if (transaction.status == TransactionStatus.APPROVED) {
+            uint256 currentApprovals = _countCurrentApprovals(txId);
+            if (currentApprovals >= threshold) revert TransactionNotPending();
+            transaction.approvalCount = currentApprovals;
+            transaction.status = TransactionStatus.PENDING;
+        }
+
+        if (approvals[txId][msg.sender] && approvalMembership[txId][msg.sender] == signerMembership[msg.sender]) {
+            revert InvalidTransaction();
+        }
 
         approvals[txId][msg.sender] = true;
-        transaction.approvalCount++;
-
-        if (transaction.approvalCount >= threshold) {
-            transaction.status = TransactionStatus.APPROVED;
-        }
+        approvalMembership[txId][msg.sender] = signerMembership[msg.sender];
+        _syncApprovalReadiness(transaction, txId);
 
         emit TransactionApproved(txId, msg.sender);
     }
@@ -201,6 +225,28 @@ contract MultiSigWallet {
     // -------------------------------------------------------------------------
     // Internal helpers
     // -------------------------------------------------------------------------
+    /// @notice Count approvals that still belong to the current signer set.
+    /// @dev Bounded by `signers.length`. A stored approval counts only when its membership
+    ///      generation matches the signer's current generation, so removed signers contribute nothing.
+    function _countCurrentApprovals(uint256 txId) internal view returns (uint256 count) {
+        uint256 signerCount = signers.length;
+        for (uint256 i = 0; i < signerCount; i++) {
+            address signer = signers[i];
+            if (approvals[txId][signer] && approvalMembership[txId][signer] == signerMembership[signer]) {
+                count++;
+            }
+        }
+    }
+
+    /// @notice Refresh the cached approval count and ready status from current signers only.
+    function _syncApprovalReadiness(Transaction storage transaction, uint256 txId) internal {
+        uint256 count = _countCurrentApprovals(txId);
+        transaction.approvalCount = count;
+        if (count >= threshold) {
+            transaction.status = TransactionStatus.APPROVED;
+        }
+    }
+
     /// @notice Revert with the provided return data, preserving the original revert reason.
     function _revertWithReason(bytes memory returndata) internal pure {
         assembly ("memory-safe") {
@@ -232,22 +278,21 @@ contract MultiSigWallet {
     /// @param txId The ID of the transaction to execute.
     /// @dev Access: Caller permissions are checked against the sender or assigned roles.
     /// @dev Reverts: `NotSigner` if `!isSigner[msg.sender]` is true. `TransactionNotFound` if `txId
-    ///     >= transactionCount` is true. `InsufficientApprovals` if status is not APPROVED or
-    ///     `approvalCount` is below the current threshold. `TransactionAlreadyExecuted` if
+    ///     >= transactionCount` is true. `InsufficientApprovals` if the transaction is not ready or
+    ///     current-signer approvals are below `threshold`. `TransactionAlreadyExecuted` if
     ///     `transaction.executedAt != 0` is true. Preserves target revert reason if execution fails.
     function executeTransaction(uint256 txId) external {
         if (!isSigner[msg.sender]) revert NotSigner();
         if (txId >= transactionCount) revert TransactionNotFound();
 
         Transaction storage transaction = transactions[txId];
-        // Re-check live threshold so APPROVED status from a prior (lower) threshold cannot bypass.
-        if (
-            transaction.status != TransactionStatus.APPROVED
-                || transaction.approvalCount < threshold
-        ) {
+        if (transaction.executedAt != 0) revert TransactionAlreadyExecuted();
+
+        uint256 currentApprovals = _countCurrentApprovals(txId);
+        if (transaction.status != TransactionStatus.APPROVED || currentApprovals < threshold) {
             revert InsufficientApprovals();
         }
-        if (transaction.executedAt != 0) revert TransactionAlreadyExecuted();
+        transaction.approvalCount = currentApprovals;
 
         transaction.status = TransactionStatus.EXECUTED;
         transaction.executedAt = block.timestamp;
