@@ -16,12 +16,25 @@ contract PriceOracle is Ownable {
     error FeedNotRegistered();
     error FeedAlreadyRegistered();
     error NotAuthorizedUpdater();
+    error ZeroFeedId();
+    error InvalidFeedMetadata();
+    error FeedMetadataMissing();
+    error IncompatibleFallback();
+    error InvalidTimestamp();
+    error FutureTimestamp();
+    error SourceTimestampNotIncreasing();
+    error RoundIdNotIncreasing();
 
     // ── Types ──────────────────────────────────────────────────────────────────
 
     struct FeedData {
-        int256  price;          // latest price (18-decimal fixed-point)
+        int256  price;          // latest price in the registered feed's units
         uint256 updatedAt;      // timestamp of last update
+        bytes32 baseAsset;      // machine-readable base asset identifier
+        bytes32 quoteAsset;     // machine-readable quote asset identifier
+        uint8   decimals;       // decimals used to scale this feed's prices
+        uint80  roundId;        // latest source round identifier
+        uint256 receivedAt;     // timestamp when the update was received
         uint256 maxStaleness;   // max seconds before price is considered stale
         bool    active;         // whether this feed is active
         string  description;    // human-readable label (e.g. "ETH/USD")
@@ -29,8 +42,20 @@ contract PriceOracle is Ownable {
 
     // ── Events ─────────────────────────────────────────────────────────────────
     event FeedRegistered(bytes32 indexed feedId, string description, uint256 maxStaleness);
+    event FeedMetadataRegistered(
+        bytes32 indexed feedId,
+        bytes32 indexed baseAsset,
+        bytes32 indexed quoteAsset,
+        uint8 decimals
+    );
     event FeedDeactivated(bytes32 indexed feedId);
-    event PriceUpdated(bytes32 indexed feedId, int256 price, uint256 timestamp);
+    event PriceUpdated(
+        bytes32 indexed feedId,
+        int256 price,
+        uint256 sourceTimestamp,
+        uint80 roundId,
+        uint256 receivedAt
+    );
     event FallbackSet(bytes32 indexed primaryFeedId, bytes32 indexed fallbackFeedId);
     event UpdaterSet(bytes32 indexed feedId, address indexed updater, bool approved);
 
@@ -63,17 +88,48 @@ contract PriceOracle is Ownable {
 
     // ── Admin ──────────────────────────────────────────────────────────────────
 
-    /// @notice Register a new price feed.
+    /// @notice Register a new price feed; the zero feed ID is reserved.
     /// @param feedId       Unique identifier (e.g. keccak256("ETH/USD")).
     /// @param description  Human-readable label.
     /// @param maxStaleness Maximum age in seconds before the price is stale.
     /// @dev Access: Caller must be the contract owner.
-    /// @dev Reverts: `FeedAlreadyRegistered` if `feeds[feedId].active` is true.
+    /// @dev Reverts: `ZeroFeedId` for the reserved zero ID, or `FeedAlreadyRegistered`
+    ///     if `feeds[feedId].active` is true.
     function registerFeed(bytes32 feedId, string calldata description, uint256 maxStaleness) external onlyOwner {
+        if (feedId == bytes32(0)) revert ZeroFeedId();
+    /// @notice Register a feed without fallback-compatible identity metadata.
+    /// @param feedId       Unique identifier (e.g. keccak256("ETH/USD")).
+    /// @param description  Human-readable label.
+    /// @param maxStaleness Maximum age in seconds before the price is stale.
+    /// @dev Feeds registered without identity metadata cannot be configured as fallbacks.
+    function registerFeed(bytes32 feedId, string calldata description, uint256 maxStaleness) external onlyOwner {
+        _registerFeed(feedId, description, maxStaleness, bytes32(0), bytes32(0), 0);
+    }
+
+    /// @notice Register a feed with machine-readable identity and price scale.
+    /// @param feedId       Unique identifier for the feed.
+    /// @param description  Human-readable label.
+    /// @param maxStaleness Maximum age in seconds before the price is stale.
+    /// @param baseAsset    Machine-readable identifier for the base asset.
+    /// @param quoteAsset   Machine-readable identifier for the quote asset.
+    /// @param decimals     Decimal scale used by reported prices.
+    function registerFeed(
+        bytes32 feedId,
+        string calldata description,
+        uint256 maxStaleness,
+        bytes32 baseAsset,
+        bytes32 quoteAsset,
+        uint8 decimals
+    ) external onlyOwner {
+        if (baseAsset == bytes32(0) || quoteAsset == bytes32(0)) revert InvalidFeedMetadata();
+        _registerFeed(feedId, description, maxStaleness, baseAsset, quoteAsset, decimals);
+        emit FeedMetadataRegistered(feedId, baseAsset, quoteAsset, decimals);
         if (feeds[feedId].active) revert FeedAlreadyRegistered();
         feeds[feedId] = FeedData({
             price: 0,
             updatedAt: 0,
+            roundId: 0,
+            receivedAt: 0,
             maxStaleness: maxStaleness,
             active: true,
             description: description
@@ -95,9 +151,26 @@ contract PriceOracle is Ownable {
     /// @dev Access: Caller must be the contract owner.
     /// @dev Reverts: `FeedNotRegistered` if `!feeds[primaryFeedId].active` is true.
     ///     `FeedNotRegistered` if `!feeds[fallbackFeedId].active` is true.
+    ///     `FeedMetadataMissing` if either feed lacks identity metadata.
+    ///     `IncompatibleFallback` if the asset pair or decimal scale differs.
     function setFallback(bytes32 primaryFeedId, bytes32 fallbackFeedId) external onlyOwner {
+        if (primaryFeedId == bytes32(0) || fallbackFeedId == bytes32(0)) revert ZeroFeedId();
         if (!feeds[primaryFeedId].active) revert FeedNotRegistered();
         if (!feeds[fallbackFeedId].active) revert FeedNotRegistered();
+
+        FeedData storage primary = feeds[primaryFeedId];
+        FeedData storage fallbackData = feeds[fallbackFeedId];
+        if (primary.baseAsset == bytes32(0) || primary.quoteAsset == bytes32(0)
+            || fallbackData.baseAsset == bytes32(0) || fallbackData.quoteAsset == bytes32(0)) {
+            revert FeedMetadataMissing();
+        }
+        if (
+            primary.baseAsset != fallbackData.baseAsset || primary.quoteAsset != fallbackData.quoteAsset
+                || primary.decimals != fallbackData.decimals
+        ) {
+            revert IncompatibleFallback();
+        }
+
         fallbackFeed[primaryFeedId] = fallbackFeedId;
         emit FallbackSet(primaryFeedId, fallbackFeedId);
     }
@@ -125,9 +198,18 @@ contract PriceOracle is Ownable {
     /// @dev Reverts: `InvalidPrice` if `price <= 0` is true.
     function updatePrice(bytes32 feedId, int256 price) external onlyUpdater(feedId) feedExists(feedId) {
         if (price <= 0) revert InvalidPrice();
-        feeds[feedId].price = price;
-        feeds[feedId].updatedAt = block.timestamp;
-        emit PriceUpdated(feedId, price, block.timestamp);
+        if (sourceTimestamp == 0) revert InvalidTimestamp();
+        if (sourceTimestamp > block.timestamp) revert FutureTimestamp();
+
+        FeedData storage feed = feeds[feedId];
+        if (sourceTimestamp <= feed.updatedAt) revert SourceTimestampNotIncreasing();
+        if (roundId == 0 || roundId <= feed.roundId) revert RoundIdNotIncreasing();
+
+        feed.price = price;
+        feed.updatedAt = sourceTimestamp;
+        feed.roundId = roundId;
+        feed.receivedAt = block.timestamp;
+        emit PriceUpdated(feedId, price, sourceTimestamp, roundId, feed.receivedAt);
     }
 
     // ── Price queries ──────────────────────────────────────────────────────────
@@ -135,7 +217,7 @@ contract PriceOracle is Ownable {
     /// @notice Returns the latest valid price for a feed, falling back if primary is stale.
     /// @param feedId  The primary feed to query.
     /// @return price      The latest valid price.
-    /// @return updatedAt  Timestamp of the price.
+    /// @return updatedAt  Source observation timestamp of the price.
     /// @dev Access: No caller-specific access restriction is imposed.
     function getPrice(bytes32 feedId) external view returns (int256 price, uint256 updatedAt) {
         (price, updatedAt) = _resolvePrice(feedId);
@@ -143,8 +225,8 @@ contract PriceOracle is Ownable {
 
     /// @notice Returns the latest price without reverting on staleness (caller must validate).
     /// @param feedId Identifier of the relevant feed.
-    /// @return Raw price returned by the operation.
-    /// @return Raw price returned by the operation.
+    /// @return price Latest stored price.
+    /// @return updatedAt Source observation timestamp of the price.
     /// @dev Access: No caller-specific access restriction is imposed.
     function getRawPrice(bytes32 feedId) external view feedExists(feedId) returns (int256, uint256) {
         FeedData storage f = feeds[feedId];
@@ -170,6 +252,28 @@ contract PriceOracle is Ownable {
     }
 
     // ── Internal ───────────────────────────────────────────────────────────────
+
+    function _registerFeed(
+        bytes32 feedId,
+        string calldata description,
+        uint256 maxStaleness,
+        bytes32 baseAsset,
+        bytes32 quoteAsset,
+        uint8 decimals
+    ) private {
+        if (feeds[feedId].active) revert FeedAlreadyRegistered();
+        feeds[feedId] = FeedData({
+            price: 0,
+            updatedAt: 0,
+            baseAsset: baseAsset,
+            quoteAsset: quoteAsset,
+            decimals: decimals,
+            maxStaleness: maxStaleness,
+            active: true,
+            description: description
+        });
+        emit FeedRegistered(feedId, description, maxStaleness);
+    }
 
     function _resolvePrice(bytes32 feedId) internal view returns (int256 price, uint256 updatedAt) {
         if (!feeds[feedId].active) revert FeedNotRegistered();

@@ -49,6 +49,7 @@ contract ResolutionTest is Test {
     address internal alice = address(0xA11CE);
     address internal bob = address(0xB0B);
     address internal updater = address(0xFEED);
+    uint80 internal oracleRoundId;
 
     // -------------------------------------------------------------------------
     // Market
@@ -87,7 +88,7 @@ contract ResolutionTest is Test {
         priceOracle.setUpdater(ORACLE_FEED_ID, updater, true);
         // Push a fresh price
         vm.prank(updater);
-        priceOracle.updatePrice(ORACLE_FEED_ID, 2000e18);
+        _updateOraclePrice();
 
         // Deploy Resolution with PriceOracle
         resolution = new Resolution(DISPUTE_WINDOW, resolverAddr, adminAddr, address(positionToken), address(priceOracle));
@@ -115,13 +116,18 @@ contract ResolutionTest is Test {
     // Internal helpers
     // -------------------------------------------------------------------------
 
+    function _updateOraclePrice() internal {
+        oracleRoundId += 1;
+        priceOracle.updatePrice(ORACLE_FEED_ID, 2000e18, block.timestamp, oracleRoundId);
+    }
+
     /// @dev Warp past the resolution deadline and resolve the market
     function _resolveMarket(Resolution.Outcome outcome) internal {
         vm.warp(block.timestamp + 3 hours); // past deadline
         
         // Push fresh price AFTER warp (within MAX_STALENESS)
         vm.prank(updater);
-        priceOracle.updatePrice(ORACLE_FEED_ID, 2000e18);
+        _updateOraclePrice();
 
         vm.prank(resolverAddr);
         resolution.resolve(marketAddr, outcome, bytes("ipfs://evidence"));
@@ -156,7 +162,7 @@ contract ResolutionTest is Test {
         
         // Push fresh price AFTER warp (within MAX_STALENESS)
         vm.prank(updater);
-        priceOracle.updatePrice(ORACLE_FEED_ID, 2000e18);
+        _updateOraclePrice();
         
         vm.prank(resolverAddr);
         resolution.resolve(marketAddr, outcome, bytes("data"));
@@ -182,7 +188,7 @@ contract ResolutionTest is Test {
         
         // Push fresh price AFTER warp
         vm.prank(updater);
-        priceOracle.updatePrice(ORACLE_FEED_ID, 2000e18);
+        _updateOraclePrice();
         
         vm.prank(caller);
         vm.expectRevert(Resolution.NotResolver.selector);
@@ -207,7 +213,7 @@ contract ResolutionTest is Test {
 
         // Push fresh price before claiming payout
         vm.prank(updater);
-        priceOracle.updatePrice(ORACLE_FEED_ID, 2000e18);
+        _updateOraclePrice();
 
         uint256 totalCollateral = pool.totalLiquidity();
         uint256 totalYesSupply = positionToken.totalSupply(positionToken.yesId(marketAddr));
@@ -239,7 +245,7 @@ contract ResolutionTest is Test {
 
         // Push fresh price before claiming payout
         vm.prank(updater);
-        priceOracle.updatePrice(ORACLE_FEED_ID, 2000e18);
+        _updateOraclePrice();
 
         uint256 totalCollateralBefore = pool.totalLiquidity();
 
@@ -419,7 +425,7 @@ contract ResolutionTest is Test {
 
         // Push fresh price AFTER warp
         vm.prank(updater);
-        priceOracle.updatePrice(ORACLE_FEED_ID, 2000e18);
+        _updateOraclePrice();
 
         vm.prank(alice);
         vm.expectRevert(Resolution.NotWinningHolder.selector);
@@ -456,7 +462,7 @@ contract ResolutionTest is Test {
         
         // Push fresh price AFTER warp
         vm.prank(updater);
-        priceOracle.updatePrice(ORACLE_FEED_ID, 2000e18);
+        _updateOraclePrice();
         
         vm.prank(resolverAddr);
         vm.expectEmit(true, false, true, true);
@@ -480,7 +486,7 @@ contract ResolutionTest is Test {
 
         // Push fresh price AFTER warp
         vm.prank(updater);
-        priceOracle.updatePrice(ORACLE_FEED_ID, 2000e18);
+        _updateOraclePrice();
 
         uint256 totalCollateral = pool.totalLiquidity();
         uint256 totalYes = positionToken.totalSupply(positionToken.yesId(marketAddr));
@@ -545,7 +551,7 @@ contract ResolutionTest is Test {
         
         // Push fresh price AFTER warp
         vm.prank(updater);
-        priceOracle.updatePrice(ORACLE_FEED_ID, 2000e18);
+        _updateOraclePrice();
         
         vm.prank(alice);
         vm.expectRevert(Resolution.DisputeWindowActive.selector);
@@ -561,7 +567,7 @@ contract ResolutionTest is Test {
         
         // Push fresh price AFTER warp
         vm.prank(updater);
-        priceOracle.updatePrice(ORACLE_FEED_ID, 2000e18);
+        _updateOraclePrice();
         
         vm.prank(alice);
         resolution.claimPayout(marketAddr); // should not revert
@@ -584,7 +590,7 @@ contract ResolutionTest is Test {
 
         // Push fresh price AFTER warp
         vm.prank(updater);
-        priceOracle.updatePrice(ORACLE_FEED_ID, 2000e18);
+        _updateOraclePrice();
 
         uint256 totalCollateral = pool.totalLiquidity();
         uint256 totalYes = positionToken.totalSupply(positionToken.yesId(marketAddr));
@@ -623,7 +629,7 @@ contract ResolutionTest is Test {
 
         // Push fresh price AFTER warp
         vm.prank(updater);
-        priceOracle.updatePrice(ORACLE_FEED_ID, 2000e18);
+        _updateOraclePrice();
 
         // Alice holds YES but outcome is now NO — cannot claim
         vm.prank(alice);
