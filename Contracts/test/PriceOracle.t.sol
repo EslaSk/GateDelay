@@ -5,6 +5,8 @@ import "forge-std/Test.sol";
 import "../src/PriceOracle.sol";
 
 contract PriceOracleTest is Test {
+    event UpdaterSet(bytes32 indexed feedId, address indexed updater, bool approved);
+
     PriceOracle internal oracle;
 
     bytes32 constant ETH_USD  = keccak256("ETH/USD");
@@ -21,7 +23,7 @@ contract PriceOracleTest is Test {
         oracle.registerFeed(BTC_USD,  "BTC/USD",          MAX_STALENESS);
         oracle.registerFeed(FALLBACK, "ETH/USD Fallback", MAX_STALENESS);
 
-        oracle.setUpdater(updater, true);
+        oracle.setUpdater(ETH_USD, updater, true);
     }
 
     // ── Registration ───────────────────────────────────────────────────────────
@@ -73,6 +75,42 @@ contract PriceOracleTest is Test {
         oracle.updatePrice(ETH_USD, 1800e18);
         (int256 price,) = oracle.getRawPrice(ETH_USD);
         assertEq(price, 1800e18);
+    }
+
+    function test_isUpdater_permissionsAreFeedScoped() public view {
+        assertTrue(oracle.isUpdater(ETH_USD, updater));
+        assertFalse(oracle.isUpdater(BTC_USD, updater));
+    }
+
+    function test_updatePrice_updaterCannotUpdateOtherFeed() public {
+        vm.prank(updater);
+        vm.expectRevert(PriceOracle.NotAuthorizedUpdater.selector);
+        oracle.updatePrice(BTC_USD, 1800e18);
+    }
+
+    function test_updatePrice_revokedUpdaterCannotUpdateFeed() public {
+        oracle.setUpdater(ETH_USD, updater, false);
+
+        vm.prank(updater);
+        vm.expectRevert(PriceOracle.NotAuthorizedUpdater.selector);
+        oracle.updatePrice(ETH_USD, 1800e18);
+    }
+
+    function test_updatePrice_ownerCanUpdateAnyFeedAsEmergencyAuthority() public {
+        oracle.updatePrice(BTC_USD, 1800e18);
+        (int256 price,) = oracle.getRawPrice(BTC_USD);
+        assertEq(price, 1800e18);
+    }
+
+    function test_setUpdater_emitsFeedScopedPermissionEvent() public {
+        vm.expectEmit(true, true, false, true);
+        emit UpdaterSet(ETH_USD, updater, false);
+        oracle.setUpdater(ETH_USD, updater, false);
+    }
+
+    function test_setUpdater_revertsForZeroAddress() public {
+        vm.expectRevert(PriceOracle.ZeroAddress.selector);
+        oracle.setUpdater(ETH_USD, address(0), true);
     }
 
     function test_updatePrice_revertsUnauthorized() public {

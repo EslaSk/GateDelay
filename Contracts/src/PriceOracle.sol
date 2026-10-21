@@ -32,7 +32,7 @@ contract PriceOracle is Ownable {
     event FeedDeactivated(bytes32 indexed feedId);
     event PriceUpdated(bytes32 indexed feedId, int256 price, uint256 timestamp);
     event FallbackSet(bytes32 indexed primaryFeedId, bytes32 indexed fallbackFeedId);
-    event UpdaterSet(address indexed updater, bool approved);
+    event UpdaterSet(bytes32 indexed feedId, address indexed updater, bool approved);
 
     // ── State ──────────────────────────────────────────────────────────────────
 
@@ -42,13 +42,13 @@ contract PriceOracle is Ownable {
     /// @notice Primary → fallback feed mapping
     mapping(bytes32 => bytes32) public fallbackFeed;
 
-    /// @notice Addresses authorised to push price updates
-    mapping(address => bool) public isUpdater;
+    /// @notice Feed-specific authorization for price updaters
+    mapping(bytes32 => mapping(address => bool)) public isUpdater;
 
     // ── Modifiers ──────────────────────────────────────────────────────────────
 
-    modifier onlyUpdater() {
-        if (!isUpdater[msg.sender] && msg.sender != owner()) revert NotAuthorizedUpdater();
+    modifier onlyUpdater(bytes32 feedId) {
+        if (!isUpdater[feedId][msg.sender] && msg.sender != owner()) revert NotAuthorizedUpdater();
         _;
     }
 
@@ -59,9 +59,7 @@ contract PriceOracle is Ownable {
 
     // ── Constructor ────────────────────────────────────────────────────────────
 
-    constructor() Ownable(msg.sender) {
-        isUpdater[msg.sender] = true;
-    }
+    constructor() Ownable(msg.sender) {}
 
     // ── Admin ──────────────────────────────────────────────────────────────────
 
@@ -104,15 +102,17 @@ contract PriceOracle is Ownable {
         emit FallbackSet(primaryFeedId, fallbackFeedId);
     }
 
-    /// @notice Approve or revoke a price updater.
+    /// @notice Approve or revoke an updater for one active feed.
+    /// @param feedId Feed the updater may update.
     /// @param updater Address associated with updater.
     /// @param approved Whether approved is enabled or selected.
     /// @dev Access: Caller must be the contract owner.
-    /// @dev Reverts: `ZeroAddress` if `updater == address(0)` is true.
-    function setUpdater(address updater, bool approved) external onlyOwner {
+    /// @dev Reverts: `FeedNotRegistered` for an inactive feed or `ZeroAddress`
+    ///     if `updater == address(0)`.
+    function setUpdater(bytes32 feedId, address updater, bool approved) external onlyOwner feedExists(feedId) {
         if (updater == address(0)) revert ZeroAddress();
-        isUpdater[updater] = approved;
-        emit UpdaterSet(updater, approved);
+        isUpdater[feedId][updater] = approved;
+        emit UpdaterSet(feedId, updater, approved);
     }
 
     // ── Price updates ──────────────────────────────────────────────────────────
@@ -120,9 +120,10 @@ contract PriceOracle is Ownable {
     /// @notice Push a new price for a feed.
     /// @param feedId  The feed to update.
     /// @param price   New price value (must be > 0).
-    /// @dev Access: Caller must satisfy `onlyUpdater` access checks.
+    /// @dev Access: Caller must be authorized for `feedId`, or be the owner.
+    ///     The owner retains emergency update authority across all feeds.
     /// @dev Reverts: `InvalidPrice` if `price <= 0` is true.
-    function updatePrice(bytes32 feedId, int256 price) external onlyUpdater feedExists(feedId) {
+    function updatePrice(bytes32 feedId, int256 price) external onlyUpdater(feedId) feedExists(feedId) {
         if (price <= 0) revert InvalidPrice();
         feeds[feedId].price = price;
         feeds[feedId].updatedAt = block.timestamp;
