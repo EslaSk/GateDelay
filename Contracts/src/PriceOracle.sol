@@ -16,6 +16,7 @@ contract PriceOracle is Ownable {
     error FeedNotRegistered();
     error FeedAlreadyRegistered();
     error NotAuthorizedUpdater();
+    error ZeroFeedId();
 
     // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -65,13 +66,15 @@ contract PriceOracle is Ownable {
 
     // ── Admin ──────────────────────────────────────────────────────────────────
 
-    /// @notice Register a new price feed.
+    /// @notice Register a new price feed; the zero feed ID is reserved.
     /// @param feedId       Unique identifier (e.g. keccak256("ETH/USD")).
     /// @param description  Human-readable label.
     /// @param maxStaleness Maximum age in seconds before the price is stale.
     /// @dev Access: Caller must be the contract owner.
-    /// @dev Reverts: `FeedAlreadyRegistered` if `feeds[feedId].active` is true.
+    /// @dev Reverts: `ZeroFeedId` for the reserved zero ID, or `FeedAlreadyRegistered`
+    ///     if `feeds[feedId].active` is true.
     function registerFeed(bytes32 feedId, string calldata description, uint256 maxStaleness) external onlyOwner {
+        if (feedId == bytes32(0)) revert ZeroFeedId();
         if (feeds[feedId].active) revert FeedAlreadyRegistered();
         feeds[feedId] = FeedData({
             price: 0,
@@ -98,6 +101,7 @@ contract PriceOracle is Ownable {
     /// @dev Reverts: `FeedNotRegistered` if `!feeds[primaryFeedId].active` is true.
     ///     `FeedNotRegistered` if `!feeds[fallbackFeedId].active` is true.
     function setFallback(bytes32 primaryFeedId, bytes32 fallbackFeedId) external onlyOwner {
+        if (primaryFeedId == bytes32(0) || fallbackFeedId == bytes32(0)) revert ZeroFeedId();
         if (!feeds[primaryFeedId].active) revert FeedNotRegistered();
         if (!feeds[fallbackFeedId].active) revert FeedNotRegistered();
         fallbackFeed[primaryFeedId] = fallbackFeedId;
