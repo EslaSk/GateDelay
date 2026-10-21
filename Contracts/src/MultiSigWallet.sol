@@ -325,7 +325,6 @@ function _revertWithReason(bytes memory returndata) internal pure {
         revert(add(returndata, 0x20), mload(returndata))
     }
 }
-    }
 
     /// @notice Execute an approved transaction.
     /// @param txId The ID of the transaction to execute.
