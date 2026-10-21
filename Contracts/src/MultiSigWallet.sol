@@ -386,24 +386,6 @@ function _revertWithReason(bytes memory returndata) internal pure {
         revert(add(returndata, 0x20), mload(returndata))
     }
 }
-    }
-    if (block.timestamp > transaction.expiry) revert ProposalExpired();
-    if (!isSigner[signer]) revert NotSigner();
-    if (approvals[txId][signer]) revert DuplicateSigner();
-
-    bytes32 digest = getApprovalDigest(
-        transaction.nonce,
-        transaction.target,
-        transaction.value,
-        keccak256(transaction.data),
-        transaction.expiry
-    );
-
-    if (_recover(digest, signature) != signer) revert InvalidSignature();
-
-    _consumeNonce(transaction.nonce, txId);
-    _recordApproval(txId, signer);
-}
 
 function _recordApproval(uint256 txId, address signer) private {
     Transaction storage transaction = transactions[txId];
