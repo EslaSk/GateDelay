@@ -16,12 +16,18 @@ contract PriceOracle is Ownable {
     error FeedNotRegistered();
     error FeedAlreadyRegistered();
     error NotAuthorizedUpdater();
+    error InvalidFeedMetadata();
+    error FeedMetadataMissing();
+    error IncompatibleFallback();
 
     // ── Types ──────────────────────────────────────────────────────────────────
 
     struct FeedData {
-        int256  price;          // latest price (18-decimal fixed-point)
+        int256  price;          // latest price in the registered feed's units
         uint256 updatedAt;      // timestamp of last update
+        bytes32 baseAsset;      // machine-readable base asset identifier
+        bytes32 quoteAsset;     // machine-readable quote asset identifier
+        uint8   decimals;       // decimals used to scale this feed's prices
         uint256 maxStaleness;   // max seconds before price is considered stale
         bool    active;         // whether this feed is active
         string  description;    // human-readable label (e.g. "ETH/USD")
@@ -29,6 +35,12 @@ contract PriceOracle is Ownable {
 
     // ── Events ─────────────────────────────────────────────────────────────────
     event FeedRegistered(bytes32 indexed feedId, string description, uint256 maxStaleness);
+    event FeedMetadataRegistered(
+        bytes32 indexed feedId,
+        bytes32 indexed baseAsset,
+        bytes32 indexed quoteAsset,
+        uint8 decimals
+    );
     event FeedDeactivated(bytes32 indexed feedId);
     event PriceUpdated(bytes32 indexed feedId, int256 price, uint256 timestamp);
     event FallbackSet(bytes32 indexed primaryFeedId, bytes32 indexed fallbackFeedId);
@@ -65,22 +77,33 @@ contract PriceOracle is Ownable {
 
     // ── Admin ──────────────────────────────────────────────────────────────────
 
-    /// @notice Register a new price feed.
+    /// @notice Register a feed without fallback-compatible identity metadata.
     /// @param feedId       Unique identifier (e.g. keccak256("ETH/USD")).
     /// @param description  Human-readable label.
     /// @param maxStaleness Maximum age in seconds before the price is stale.
-    /// @dev Access: Caller must be the contract owner.
-    /// @dev Reverts: `FeedAlreadyRegistered` if `feeds[feedId].active` is true.
+    /// @dev Feeds registered without identity metadata cannot be configured as fallbacks.
     function registerFeed(bytes32 feedId, string calldata description, uint256 maxStaleness) external onlyOwner {
-        if (feeds[feedId].active) revert FeedAlreadyRegistered();
-        feeds[feedId] = FeedData({
-            price: 0,
-            updatedAt: 0,
-            maxStaleness: maxStaleness,
-            active: true,
-            description: description
-        });
-        emit FeedRegistered(feedId, description, maxStaleness);
+        _registerFeed(feedId, description, maxStaleness, bytes32(0), bytes32(0), 0);
+    }
+
+    /// @notice Register a feed with machine-readable identity and price scale.
+    /// @param feedId       Unique identifier for the feed.
+    /// @param description  Human-readable label.
+    /// @param maxStaleness Maximum age in seconds before the price is stale.
+    /// @param baseAsset    Machine-readable identifier for the base asset.
+    /// @param quoteAsset   Machine-readable identifier for the quote asset.
+    /// @param decimals     Decimal scale used by reported prices.
+    function registerFeed(
+        bytes32 feedId,
+        string calldata description,
+        uint256 maxStaleness,
+        bytes32 baseAsset,
+        bytes32 quoteAsset,
+        uint8 decimals
+    ) external onlyOwner {
+        if (baseAsset == bytes32(0) || quoteAsset == bytes32(0)) revert InvalidFeedMetadata();
+        _registerFeed(feedId, description, maxStaleness, baseAsset, quoteAsset, decimals);
+        emit FeedMetadataRegistered(feedId, baseAsset, quoteAsset, decimals);
     }
 
     /// @notice Deactivate a feed.
@@ -97,9 +120,25 @@ contract PriceOracle is Ownable {
     /// @dev Access: Caller must be the contract owner.
     /// @dev Reverts: `FeedNotRegistered` if `!feeds[primaryFeedId].active` is true.
     ///     `FeedNotRegistered` if `!feeds[fallbackFeedId].active` is true.
+    ///     `FeedMetadataMissing` if either feed lacks identity metadata.
+    ///     `IncompatibleFallback` if the asset pair or decimal scale differs.
     function setFallback(bytes32 primaryFeedId, bytes32 fallbackFeedId) external onlyOwner {
         if (!feeds[primaryFeedId].active) revert FeedNotRegistered();
         if (!feeds[fallbackFeedId].active) revert FeedNotRegistered();
+
+        FeedData storage primary = feeds[primaryFeedId];
+        FeedData storage fallbackData = feeds[fallbackFeedId];
+        if (primary.baseAsset == bytes32(0) || primary.quoteAsset == bytes32(0)
+            || fallbackData.baseAsset == bytes32(0) || fallbackData.quoteAsset == bytes32(0)) {
+            revert FeedMetadataMissing();
+        }
+        if (
+            primary.baseAsset != fallbackData.baseAsset || primary.quoteAsset != fallbackData.quoteAsset
+                || primary.decimals != fallbackData.decimals
+        ) {
+            revert IncompatibleFallback();
+        }
+
         fallbackFeed[primaryFeedId] = fallbackFeedId;
         emit FallbackSet(primaryFeedId, fallbackFeedId);
     }
@@ -169,6 +208,28 @@ contract PriceOracle is Ownable {
     }
 
     // ── Internal ───────────────────────────────────────────────────────────────
+
+    function _registerFeed(
+        bytes32 feedId,
+        string calldata description,
+        uint256 maxStaleness,
+        bytes32 baseAsset,
+        bytes32 quoteAsset,
+        uint8 decimals
+    ) private {
+        if (feeds[feedId].active) revert FeedAlreadyRegistered();
+        feeds[feedId] = FeedData({
+            price: 0,
+            updatedAt: 0,
+            baseAsset: baseAsset,
+            quoteAsset: quoteAsset,
+            decimals: decimals,
+            maxStaleness: maxStaleness,
+            active: true,
+            description: description
+        });
+        emit FeedRegistered(feedId, description, maxStaleness);
+    }
 
     function _resolvePrice(bytes32 feedId) internal view returns (int256 price, uint256 updatedAt) {
         if (!feeds[feedId].active) revert FeedNotRegistered();
