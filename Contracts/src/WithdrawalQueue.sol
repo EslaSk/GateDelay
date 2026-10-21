@@ -33,7 +33,7 @@ contract WithdrawalQueue is Ownable, ReentrancyGuard {
     // -------------------------------------------------------------------------
     // Types
     // -------------------------------------------------------------------------
-    enum Status { NONE, PENDING, PROCESSED, CANCELLED }
+    enum Status { NONE, PENDING, PROCESSED, CANCELLED, QUARANTINED }
 
     struct Request {
         uint256 id;
@@ -261,6 +261,7 @@ contract WithdrawalQueue is Ownable, ReentrancyGuard {
 
         _queue.push(id);
         _userRequests[msg.sender].push(id);
+        _pendingLiability[token] += amount;
 
         emit WithdrawalRequested(id, msg.sender, address(token), amount);
     }
@@ -295,8 +296,17 @@ contract WithdrawalQueue is Ownable, ReentrancyGuard {
     // Processor actions
     // -------------------------------------------------------------------------
 
-    /// @notice Settle the next pending request in FIFO order, paying the user
-    ///         from this contract's token balance.
+    /// @notice Settle the next pending request in FIFO order for `token`, paying
+    ///         the user from this contract's token balance.
+    /// @dev Fairness policy: each asset has an independent FIFO queue, so a
+    ///      failing request in one asset cannot block requests for other assets.
+    ///      Within a token queue, if the head transfer fails the request is moved
+    ///      to QUARANTINED (entitlement preserved, liability retained) and the
+    ///      next pending request for that token is attempted, so one unfundable
+    ///      request cannot indefinitely block otherwise payable requests. The
+    ///      quarantined request can later be retried or cancelled via
+    ///      `recoverQuarantined`.
+    /// @param token Token contract address used by the operation.
     /// @return id Identifier of the relevant .
     /// @dev Access: Caller must satisfy `onlyProcessor` access checks.
     /// @dev Reverts: `QueueEmpty` if no pending entries remain.
@@ -326,8 +336,52 @@ contract WithdrawalQueue is Ownable, ReentrancyGuard {
             }
         }
 
-        r.token.safeTransfer(r.user, r.amount);
-        emit WithdrawalProcessed(id, r.user, r.amount);
+    /// @notice Recover a quarantined request: retry payment, or cancel it if
+    ///         `cancelIfFails` is true and the retry fails.
+    /// @dev Entitlement is preserved while quarantined; liability is only
+    ///      reduced on successful settlement or explicit cancellation, so no
+    ///      double payment can occur.
+    /// @param id Numeric id used by this operation.
+    /// @param cancelIfFails Whether to cancel the request if payment fails.
+    /// @return paid True if the request was settled.
+    /// @dev Access: Caller must satisfy `onlyProcessor` access checks.
+    /// @dev Reverts: `UnknownRequest` if `r.status == Status.NONE` is true. `NotQuarantined` if
+    ///     `r.status != Status.QUARANTINED` is true.
+    function recoverQuarantined(uint256 id, bool cancelIfFails)
+        external
+        nonReentrant
+        onlyProcessor
+        returns (bool paid)
+    {
+        Request storage r = _requests[id];
+        if (r.status == Status.NONE) revert UnknownRequest();
+        if (r.status != Status.QUARANTINED) revert NotQuarantined();
+
+        if (_tryPay(r)) {
+            r.status = Status.PROCESSED;
+            r.settledAt = uint64(block.timestamp);
+            _pendingLiability[r.token] -= r.amount;
+            emit WithdrawalRecovered(id, r.user, address(r.token), r.amount);
+            emit WithdrawalProcessed(id, r.user, r.amount);
+            return true;
+        }
+
+        if (cancelIfFails) {
+            r.status = Status.CANCELLED;
+            r.settledAt = uint64(block.timestamp);
+            _pendingLiability[r.token] -= r.amount;
+            emit WithdrawalCancelled(id, r.user);
+        }
+        return false;
+    }
+
+    /// @dev Attempts to pay `r`; returns false instead of reverting on failure.
+    function _tryPay(Request storage r) internal returns (bool) {
+        try IERC20(address(r.token)).transfer(r.user, r.amount) returns (bool ok) {
+            return ok;
+        } catch {
+            return false;
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -362,7 +416,16 @@ contract WithdrawalQueue is Ownable, ReentrancyGuard {
         return _requests[id].status;
     }
 
-    /// @notice Length of the active pending queue.
+    /// @notice Length of the active pending queue for `token`.
+    /// @param token Token contract address used by the operation.
+    /// @return Value produced by the operation.
+    /// @dev Access: No caller-specific access restriction is imposed.
+    function queueLength(IERC20 token) external view returns (uint256) {
+        return _queues[token].length;
+    }
+
+    /// @notice Read the next request id for `token` without removing it.
+    /// @param token Token contract address used by the operation.
     /// @return Value produced by the operation.
     /// @dev Access: No caller-specific access restriction is imposed.
     function queueLength() external view returns (uint256) {
@@ -387,7 +450,8 @@ contract WithdrawalQueue is Ownable, ReentrancyGuard {
         revert QueueEmpty();
     }
 
-    /// @notice Snapshot of current pending request ids in FIFO order.
+    /// @notice Aggregate unsettled liability for `token` (PENDING + QUARANTINED).
+    /// @param token Token contract address used by the operation.
     /// @return Value produced by the operation.
     /// @dev Access: No caller-specific access restriction is imposed.
     function pendingIds() external view returns (uint256[] memory) {
@@ -413,5 +477,38 @@ contract WithdrawalQueue is Ownable, ReentrancyGuard {
     /// @dev Access: No caller-specific access restriction is imposed.
     function userRequests(address user) external view returns (uint256[] memory) {
         return _userRequests[user];
+    }
+
+    /// @notice Bounded page of request ids submitted by `user`, in submission order.
+    /// @param user User address affected by this operation.
+    /// @param cursor Start index into the user's history (0-based).
+    /// @param limit Maximum number of ids to return.
+    /// @return ids Request ids in stable submission order.
+    /// @return statuses Status of each returned id.
+    /// @return nextCursor Cursor to pass for the next page (== history length when exhausted).
+    /// @dev Access: No caller-specific access restriction is imposed.
+    /// @dev Reverts: `InvalidLimit` if `limit == 0` is true.
+    function getUserRequestsRange(address user, uint256 cursor, uint256 limit)
+        external
+        view
+        returns (uint256[] memory ids, Status[] memory statuses, uint256 nextCursor)
+    {
+        if (limit == 0) revert InvalidLimit();
+        uint256[] storage hist = _userRequests[user];
+        uint256 len = hist.length;
+        if (cursor >= len) {
+            return (new uint256[](0), new Status[](0), len);
+        }
+        uint256 end = cursor + limit;
+        if (end > len) end = len;
+        uint256 count = end - cursor;
+        ids = new uint256[](count);
+        statuses = new Status[](count);
+        for (uint256 i = 0; i < count; i++) {
+            uint256 rid = hist[cursor + i];
+            ids[i] = rid;
+            statuses[i] = _requests[rid].status;
+        }
+        nextCursor = end;
     }
 }
