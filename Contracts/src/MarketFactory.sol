@@ -10,6 +10,7 @@ contract MarketFactory {
     // -------------------------------------------------------------------------
     // Custom errors
     // -------------------------------------------------------------------------
+    error NotGovernance();
     error ZeroCollateralToken();
     error InvalidDeadline();
     error ZeroMinLiquidity();
@@ -48,6 +49,7 @@ contract MarketFactory {
     // Storage
     // -------------------------------------------------------------------------
     PositionToken public immutable positionToken;
+    address public immutable governance;
 
     /// @dev market address => MarketInfo
     mapping(address => MarketInfo) private _markets;
@@ -62,11 +64,29 @@ contract MarketFactory {
         if (_positionToken == address(0)) revert ZeroPositionToken();
         if (_positionToken.code.length == 0) revert InvalidPositionToken();
         positionToken = PositionToken(_positionToken);
+        governance = msg.sender;
     }
 
     // -------------------------------------------------------------------------
     // External functions
     // -------------------------------------------------------------------------
+
+    /// @notice Manage independent token privileges without changing existing balances.
+    function setMinterPermission(address actor, address market, bool enabled) external {
+        if (msg.sender != governance) revert NotGovernance();
+        if (enabled) positionToken.authoriseMinter(actor, market);
+        else positionToken.revokeMinter(actor);
+    }
+    function setBurnerPermission(address actor, bool enabled) external {
+        if (msg.sender != governance) revert NotGovernance();
+        if (enabled) positionToken.authoriseBurner(actor);
+        else positionToken.revokeBurner(actor);
+    }
+    function setGlobalSettlementPermission(address actor, bool enabled) external {
+        if (msg.sender != governance) revert NotGovernance();
+        if (enabled) positionToken.authoriseGlobalSettlement(actor);
+        else positionToken.revokeGlobalSettlement(actor);
+    }
 
     /// @notice Create and deploy a new prediction market.
     /// @param collateralToken  ERC20 token used as collateral (must be non-zero).
