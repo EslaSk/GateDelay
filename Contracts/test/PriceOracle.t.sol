@@ -10,6 +10,10 @@ contract PriceOracleTest is Test {
     bytes32 constant ETH_USD  = keccak256("ETH/USD");
     bytes32 constant BTC_USD  = keccak256("BTC/USD");
     bytes32 constant FALLBACK = keccak256("ETH/USD/FALLBACK");
+    bytes32 constant ETH_ASSET = keccak256("ETH");
+    bytes32 constant BTC_ASSET = keccak256("BTC");
+    bytes32 constant USD_ASSET = keccak256("USD");
+    bytes32 constant ETH_USD_EIGHT_DECIMALS = keccak256("ETH/USD/8");
 
     uint256 constant MAX_STALENESS = 1 hours;
 
@@ -17,9 +21,9 @@ contract PriceOracleTest is Test {
 
     function setUp() public {
         oracle = new PriceOracle();
-        oracle.registerFeed(ETH_USD,  "ETH/USD",          MAX_STALENESS);
-        oracle.registerFeed(BTC_USD,  "BTC/USD",          MAX_STALENESS);
-        oracle.registerFeed(FALLBACK, "ETH/USD Fallback", MAX_STALENESS);
+        oracle.registerFeed(ETH_USD, "ETH/USD", MAX_STALENESS, ETH_ASSET, USD_ASSET, 18);
+        oracle.registerFeed(BTC_USD, "BTC/USD", MAX_STALENESS, BTC_ASSET, USD_ASSET, 18);
+        oracle.registerFeed(FALLBACK, "ETH/USD Fallback", MAX_STALENESS, ETH_ASSET, USD_ASSET, 18);
 
         oracle.setUpdater(updater, true);
     }
@@ -29,8 +33,50 @@ contract PriceOracleTest is Test {
     function test_registerFeed_storesMetadata() public {
         PriceOracle.FeedData memory f = oracle.getFeedInfo(ETH_USD);
         assertEq(f.description, "ETH/USD");
+        assertEq(f.baseAsset, ETH_ASSET);
+        assertEq(f.quoteAsset, USD_ASSET);
+        assertEq(uint256(f.decimals), 18);
         assertEq(f.maxStaleness, MAX_STALENESS);
         assertTrue(f.active);
+    }
+
+    function test_setFallback_revertsForDifferentAsset() public {
+        vm.expectRevert(PriceOracle.IncompatibleFallback.selector);
+        oracle.setFallback(ETH_USD, BTC_USD);
+    }
+
+    function test_setFallback_revertsForDifferentDecimals() public {
+        oracle.registerFeed(
+            ETH_USD_EIGHT_DECIMALS,
+            "ETH/USD (8 decimals)",
+            MAX_STALENESS,
+            ETH_ASSET,
+            USD_ASSET,
+            8
+        );
+
+        vm.expectRevert(PriceOracle.IncompatibleFallback.selector);
+        oracle.setFallback(ETH_USD, ETH_USD_EIGHT_DECIMALS);
+    }
+
+    function test_setFallback_revertsWhenMetadataIsMissing() public {
+        bytes32 legacyFeed = keccak256("LEGACY");
+        oracle.registerFeed(legacyFeed, "Legacy", MAX_STALENESS);
+
+        vm.expectRevert(PriceOracle.FeedMetadataMissing.selector);
+        oracle.setFallback(ETH_USD, legacyFeed);
+    }
+
+    function test_registerFeedWithMetadata_revertsOnZeroAssetIdentity() public {
+        vm.expectRevert(PriceOracle.InvalidFeedMetadata.selector);
+        oracle.registerFeed(
+            keccak256("INVALID"),
+            "Invalid",
+            MAX_STALENESS,
+            bytes32(0),
+            USD_ASSET,
+            18
+        );
     }
 
     function test_registerFeed_revertsOnDuplicate() public {

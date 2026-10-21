@@ -17,6 +17,27 @@ Former `Contracts/contracts/`, root-level `contracts/` (Burnable, FlashLoanProte
 
 https://book.getfoundry.sh/
 
+### Price oracle fallback feeds
+
+Register feeds that may participate in a fallback chain with the metadata
+overload:
+
+```solidity
+oracle.registerFeed(
+    feedId,
+    "ETH/USD",
+    maxStaleness,
+    keccak256("ETH"),
+    keccak256("USD"),
+    18
+);
+```
+
+The asset identifiers and decimal scale describe the units used by the reported
+price. `setFallback` only accepts feeds with matching base asset, quote asset,
+and decimals. Feeds registered through the legacy three-argument overload have
+no machine-readable identity and cannot be configured as fallbacks.
+
 ## Usage
 
 ### Build
