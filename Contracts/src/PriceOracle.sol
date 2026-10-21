@@ -16,6 +16,7 @@ contract PriceOracle is Ownable {
     error FeedNotRegistered();
     error FeedAlreadyRegistered();
     error NotAuthorizedUpdater();
+    error ZeroFeedId();
     error InvalidFeedMetadata();
     error FeedMetadataMissing();
     error IncompatibleFallback();
@@ -89,6 +90,15 @@ contract PriceOracle is Ownable {
 
     // ── Admin ──────────────────────────────────────────────────────────────────
 
+    /// @notice Register a new price feed; the zero feed ID is reserved.
+    /// @param feedId       Unique identifier (e.g. keccak256("ETH/USD")).
+    /// @param description  Human-readable label.
+    /// @param maxStaleness Maximum age in seconds before the price is stale.
+    /// @dev Access: Caller must be the contract owner.
+    /// @dev Reverts: `ZeroFeedId` for the reserved zero ID, or `FeedAlreadyRegistered`
+    ///     if `feeds[feedId].active` is true.
+    function registerFeed(bytes32 feedId, string calldata description, uint256 maxStaleness) external onlyOwner {
+        if (feedId == bytes32(0)) revert ZeroFeedId();
     /// @notice Register a feed without fallback-compatible identity metadata.
     /// @param feedId       Unique identifier (e.g. keccak256("ETH/USD")).
     /// @param description  Human-readable label.
@@ -146,6 +156,7 @@ contract PriceOracle is Ownable {
     ///     `FeedMetadataMissing` if either feed lacks identity metadata.
     ///     `IncompatibleFallback` if the asset pair or decimal scale differs.
     function setFallback(bytes32 primaryFeedId, bytes32 fallbackFeedId) external onlyOwner {
+        if (primaryFeedId == bytes32(0) || fallbackFeedId == bytes32(0)) revert ZeroFeedId();
         if (!feeds[primaryFeedId].active) revert FeedNotRegistered();
         if (!feeds[fallbackFeedId].active) revert FeedNotRegistered();
 

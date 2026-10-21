@@ -17,6 +17,8 @@ Former `Contracts/contracts/`, root-level `contracts/` (Burnable, FlashLoanProte
 
 https://book.getfoundry.sh/
 
+The `PriceOracle` reserves `bytes32(0)` to represent the absence of a fallback.
+Feed registration and fallback configuration reject this ID with `ZeroFeedId`.
 ### Price oracle fallback feeds
 
 Register feeds that may participate in a fallback chain with the metadata

@@ -84,6 +84,21 @@ contract PriceOracleTest is Test {
         oracle.registerFeed(ETH_USD, "ETH/USD", MAX_STALENESS);
     }
 
+    function test_registerFeed_revertsOnZeroFeedId() public {
+        vm.expectRevert(PriceOracle.ZeroFeedId.selector);
+        oracle.registerFeed(bytes32(0), "Reserved zero feed", MAX_STALENESS);
+    }
+
+    function test_setFallback_revertsWhenFallbackFeedIdIsZero() public {
+        vm.expectRevert(PriceOracle.ZeroFeedId.selector);
+        oracle.setFallback(ETH_USD, bytes32(0));
+    }
+
+    function test_setFallback_revertsWhenPrimaryFeedIdIsZero() public {
+        vm.expectRevert(PriceOracle.ZeroFeedId.selector);
+        oracle.setFallback(bytes32(0), ETH_USD);
+    }
+
     function test_deactivateFeed_marksInactive() public {
         oracle.deactivateFeed(ETH_USD);
         PriceOracle.FeedData memory f = oracle.getFeedInfo(ETH_USD);
